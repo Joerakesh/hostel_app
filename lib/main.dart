@@ -1,4 +1,7 @@
+// lib/main.dart
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'notification_service.dart';
 import 'api_service.dart';
 import 'login_page.dart';
 import 'ad_dashboard.dart';
@@ -6,9 +9,17 @@ import 'logout_page.dart';
 import 'attendance_page.dart';
 import 'attendance_records_page.dart';
 
-void main() async {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await ApiService().init(); // initialize Dio + cookie jar
+  // initialize Firebase
+  await Firebase.initializeApp();
+
+  // init ApiService (your existing Dio + cookie jar init)
+  await ApiService().init();
+
+  // initialize local notifications and FCM background handler
+  await NotificationService.init();
+
   runApp(const MyApp());
 }
 
@@ -30,7 +41,6 @@ class MyApp extends StatelessWidget {
         '/logout': (context) => const LogoutPage(),
         '/ad/take-attendance': (ctx) => const AttendancePage(),
         '/ad/attendance-records': (ctx) => const AttendanceRecordsPage(),
-
       },
     );
   }
@@ -65,12 +75,38 @@ class _LoadingPageState extends State<LoadingPage> {
         return;
       }
 
+      // ----- NOTIFICATIONS: only set up when user IS logged in -----
+      // We run this in a try/catch so notification setup errors don't block navigation.
+      try {
+        await NotificationService.requestPermission();
+        NotificationService.setForegroundNotificationHandler(context);
+        await NotificationService.saveFcmTokenToServer();
+
+        // If the app was launched from a terminated state by tapping a notification,
+        // getInitialMessage() returns that RemoteMessage; handle navigation if needed.
+        final msg = await NotificationService.getInitialMessage();
+        if (msg != null) {
+          // Example: if your server sends data like {"screen":"attendance_records"}
+          final screen = msg.data['screen'];
+          if (screen == 'attendance_records') {
+            if (!mounted) return;
+            Navigator.of(context).pushReplacementNamed('/ad/attendance-records');
+            return;
+          }
+          // add other message-based navigation handling here
+        }
+      } catch (e) {
+        // Log but continue
+        // ignore: avoid_print
+        print('Notification setup failed: $e');
+      }
+
+      // ----- Role-based navigation -----
       if (role == 'ad') {
         if (!mounted) return;
         Navigator.of(context).pushReplacementNamed('/ad/dashboard');
       } else if (role == 'director') {
         // adjust route if you add director's page
-        // Navigator.of(context).pushReplacementNamed('/director/dashboard');
         if (!mounted) return;
         Navigator.of(context).pushReplacementNamed('/login'); // fallback
       } else if (role == 'student') {
