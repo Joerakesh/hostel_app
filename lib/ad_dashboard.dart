@@ -44,9 +44,10 @@ class _AdDashboardState extends State<AdDashboard> {
 
   Future<void> _checkSessionAndLoadProfile() async {
     try {
-      final authData = await ApiService().authenticate();
-      final bool isLoggedIn = authData['isLoggedIn'] == true;
-      final String? role = (authData['role'] ?? authData['user']?['role'])?.toString();
+      final auth = await ApiService().authenticate(); // quick cached response
+      final isLoggedIn = auth['isLoggedIn'] == true;
+      final role = auth['role']?.toString();
+      final cachedUsername = auth['username']?.toString();
 
       if (!isLoggedIn) {
         if (!mounted) return;
@@ -58,27 +59,27 @@ class _AdDashboardState extends State<AdDashboard> {
         if (!mounted) return;
         Navigator.of(context).pushReplacementNamed('/student/dashboard');
         return;
-      } else if (role == 'director') {
-        // Handle director redirect if needed
       }
 
-      try {
-        final resp = await ApiService().dio.get('/api/auth/me');
-        final data = resp.data;
-        final username = data?['username'] ?? data?['user']?['username'];
-        if (username != null && mounted) {
-          setState(() => adName = username.toString());
+      if (cachedUsername != null && mounted) {
+        setState(() => adName = cachedUsername);
+      }
+
+      // Only call server when username missing or when you want to refresh
+      if (cachedUsername == null) {
+        final verified = await ApiService().authenticate(forceVerify: true);
+        if (verified['isLoggedIn'] != true) {
+          if (!mounted) return;
+          Navigator.of(context).pushReplacementNamed('/login');
+          return;
         }
-      } catch (_) {
-        // ignore profile fetch errors
+        final networkUsername = verified['username']?.toString();
+        if (networkUsername != null && mounted) setState(() => adName = networkUsername);
       }
     } catch (e) {
+      // fallback to login on unexpected error
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not verify session: ${e.toString()}')),
-        );
         Navigator.of(context).pushReplacementNamed('/login');
-        return;
       }
     } finally {
       if (mounted) {
@@ -248,7 +249,6 @@ class _AdDashboardState extends State<AdDashboard> {
 
     final greeting = _greetingForHour(currentTime.hour);
     final formattedDate = MaterialLocalizations.of(context).formatFullDate(currentTime);
-    final formattedTime = '${currentTime.hour.toString().padLeft(2, '0')}:${currentTime.minute.toString().padLeft(2, '0')}:${currentTime.second.toString().padLeft(2, '0')}';
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
@@ -257,51 +257,100 @@ class _AdDashboardState extends State<AdDashboard> {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
           child: Column(
             children: [
-              // Header Section
+              // ---------- Top compact bar: logout on right ----------
+              Row(
+                children: [
+                  const SizedBox(width: 4),
+                  // You can keep this empty or put a small back button / spacing here
+                  const Spacer(),
+                  IconButton(
+                    onPressed: _logout,
+                    icon: const Icon(Icons.logout, color: Colors.grey),
+                    tooltip: 'Logout',
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 8),
+
+              // ---------- Logo centered above the card ----------
+              Column(
+                children: [
+                  // Circular logo with subtle shadow
+                  Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.12),
+                          blurRadius: 10,
+                          offset: const Offset(0, 6),
+                        ),
+                      ],
+                    ),
+                    child: CircleAvatar(
+                      radius: 38,
+                      backgroundColor: Colors.white,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(38),
+                        child: Image.asset(
+                          'assets/logo.png',
+                          width: 68,
+                          height: 68,
+                          fit: BoxFit.contain,
+                          errorBuilder: (context, error, stackTrace) => Icon(
+                            Icons.apartment,
+                            size: 36,
+                            color: Colors.grey[700],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  // Hostel title (clean, bold)
+                  Text(
+                    'Sacred Heart Hostel',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.grey[900],
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 18),
+
+              // ---------- Welcome gradient card (now acts as a welcome panel) ----------
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.all(24),
+                padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
                   gradient: const LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
-                    colors: [Color(0xFF3B82F6), Color(0xFF1D4ED8)],
+                    colors: [Color(0xFF667eea), Color(0xFF764ba2)],
                   ),
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(16),
                   boxShadow: const [
                     BoxShadow(
                       color: Colors.black26,
-                      blurRadius: 15,
-                      offset: Offset(0, 8),
+                      blurRadius: 10,
+                      offset: Offset(0, 4),
                     ),
                   ],
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: const Icon(Icons.person, color: Colors.white, size: 24),
-                        ),
-                        IconButton(
-                          onPressed: _logout,
-                          icon: const Icon(Icons.logout, color: Colors.white),
-                          tooltip: 'Logout',
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
                     Text(
                       '$greeting,',
                       style: const TextStyle(
-                        fontSize: 18,
+                        fontSize: 16,
                         color: Colors.white70,
                         fontWeight: FontWeight.w500,
                       ),
@@ -310,41 +359,31 @@ class _AdDashboardState extends State<AdDashboard> {
                     Text(
                       adName,
                       style: const TextStyle(
-                        fontSize: 28,
+                        fontSize: 24,
                         color: Colors.white,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 12),
+                    // Date info
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(12),
+                        color: Colors.white.withOpacity(0.09),
+                        borderRadius: BorderRadius.circular(10),
                       ),
                       child: Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.access_time, color: Colors.white.withOpacity(0.8), size: 20),
-                          const SizedBox(width: 12),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                formattedDate,
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  color: Colors.white.withOpacity(0.9),
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                              Text(
-                                formattedTime,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.white.withOpacity(0.7),
-                                ),
-                              ),
-                            ],
+                          Icon(Icons.calendar_today, color: Colors.white.withOpacity(0.85), size: 16),
+                          const SizedBox(width: 8),
+                          Text(
+                            formattedDate,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.white.withOpacity(0.9),
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
                         ],
                       ),
@@ -353,14 +392,14 @@ class _AdDashboardState extends State<AdDashboard> {
                 ),
               ),
 
-              const SizedBox(height: 32),
+              const SizedBox(height: 28),
 
               // Actions Section
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Padding(
-                    padding: EdgeInsets.only(left: 8, bottom: 16),
+                    padding: EdgeInsets.only(left: 8, bottom: 12),
                     child: Text(
                       'Quick Actions',
                       style: TextStyle(
@@ -376,15 +415,13 @@ class _AdDashboardState extends State<AdDashboard> {
                     icon: Icons.checklist_rounded,
                     color: const Color(0xFF10B981),
                     disabled: redirectingAttendance,
-                    // Take Attendance button
-onTap: () {
-  setState(() => redirectingAttendance = true);
-  Navigator.of(context).pushNamed('/ad/take-attendance').then((_) {
-    if (!mounted) return;
-    setState(() => redirectingAttendance = false);
-  });
-},
-
+                    onTap: () {
+                      setState(() => redirectingAttendance = true);
+                      Navigator.of(context).pushNamed('/ad/take-attendance').then((_) {
+                        if (!mounted) return;
+                        setState(() => redirectingAttendance = false);
+                      });
+                    },
                   ),
                   const SizedBox(height: 16),
                   _buildActionCard(
@@ -393,59 +430,20 @@ onTap: () {
                     icon: Icons.history_rounded,
                     color: const Color(0xFFF59E0B),
                     disabled: redirectingRecords,
-                    // Attendance Records button
-onTap: () {
-  setState(() => redirectingRecords = true);
-  Navigator.of(context).pushNamed('/ad/attendance-records').then((_) {
-    if (!mounted) return;
-    setState(() => redirectingRecords = false);
-  });
-},
-
+                    onTap: () {
+                      setState(() => redirectingRecords = true);
+                      Navigator.of(context).pushNamed('/ad/attendance-records').then((_) {
+                        if (!mounted) return;
+                        setState(() => redirectingRecords = false);
+                      });
+                    },
                   ),
                 ],
               ),
 
-              const SizedBox(height: 32),
+              const SizedBox(height: 28),
 
-              // Stats Section (Optional - you can add actual stats here)
-              // Container(
-              //   padding: const EdgeInsets.all(20),
-              //   decoration: BoxDecoration(
-              //     color: Colors.white,
-              //     borderRadius: BorderRadius.circular(16),
-              //     boxShadow: const [
-              //       BoxShadow(
-              //         color: Colors.black12,
-              //         blurRadius: 8,
-              //         offset: Offset(0, 2),
-              //       ),
-              //     ],
-              //   ),
-              //   child: Row(
-              //     mainAxisAlignment: MainAxisAlignment.spaceAround,
-              //     children: [
-              //       _buildStatItem(
-              //         value: 'Today',
-              //         label: 'Sessions',
-              //         icon: Icons.event_available_rounded,
-              //         color: const Color(0xFF3B82F6),
-              //       ),
-              //       _buildStatItem(
-              //         value: '0',
-              //         label: 'Pending',
-              //         icon: Icons.pending_actions_rounded,
-              //         color: const Color(0xFFF59E0B),
-              //       ),
-              //       _buildStatItem(
-              //         value: '100%',
-              //         label: 'Efficiency',
-              //         icon: Icons.trending_up_rounded,
-              //         color: const Color(0xFF10B981),
-              //       ),
-              //     ],
-              //   ),
-              // ),
+              // You can add stats or other widgets below...
             ],
           ),
         ),
