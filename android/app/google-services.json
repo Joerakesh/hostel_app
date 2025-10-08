@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "946794088337",
+    "project_id": "sacred-heart-hostel",
+    "storage_bucket": "sacred-heart-hostel.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:946794088337:android:e2f9964b82e63f5d377c30",
+        "android_client_info": {
+          "package_name": "com.example.hostel_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBNCZeD2Lpf5zCeBSs-q1NUEcMafrCM7NE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
