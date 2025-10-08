@@ -18,7 +18,9 @@ class _LoginPageState extends State<LoginPage> {
   final _formKey = GlobalKey<FormState>();
 
   Future<void> _handleLogin() async {
+
     if (!_formKey.currentState!.validate()) return;
+
 
     setState(() {
       _loading = true;
@@ -28,6 +30,11 @@ class _LoginPageState extends State<LoginPage> {
     try {
       final data = await ApiService().login(_username.text.trim(), _password.text);
       final role = data['user']?['role'] ?? data['role'];
+final username = data['user']?['username'] ?? data['username'];
+
+if (role != null) {
+  await CacheService.saveAuthCache(role: role.toString(), username: username?.toString());
+}
 
       if (role == 'ad') {
         // after successful login, preload attendance cache
