@@ -4,6 +4,33 @@ import 'package:shared_preferences/shared_preferences.dart';
 class CacheService {
   static const _attendanceKey = 'attendance_cache';
   static const _attendanceCachedAtKey = 'attendance_cache_at';
+  static const _authRoleKey = 'auth_role';
+static const _authUsernameKey = 'auth_username';
+static const _authCachedAtKey = 'auth_cached_at';
+
+
+  static Future<void> saveAuthCache({required String role, String? username}) async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString(_authRoleKey, role);
+  if (username != null) await prefs.setString(_authUsernameKey, username);
+  await prefs.setString(_authCachedAtKey, DateTime.now().toIso8601String());
+}
+
+static Future<Map<String, String?>> loadAuthCache() async {
+  final prefs = await SharedPreferences.getInstance();
+  return {
+    'role': prefs.getString(_authRoleKey),
+    'username': prefs.getString(_authUsernameKey),
+    'cachedAt': prefs.getString(_authCachedAtKey),
+  };
+}
+
+static Future<void> clearAuthCache() async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.remove(_authRoleKey);
+  await prefs.remove(_authUsernameKey);
+  await prefs.remove(_authCachedAtKey);
+}
 
   /// Save raw grouped students map (Map<String, dynamic>) as JSON string.
   static Future<void> saveAttendanceCache(Map<String, dynamic> groupedStudents) async {
