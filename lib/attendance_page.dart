@@ -1,8 +1,9 @@
 // lib/attendance_page.dart
+
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'api_service.dart';
-
+import 'services/cache_service.dart';
 class Student {
   final String id;
   final String name;
@@ -68,62 +69,128 @@ class _AttendancePageState extends State<AttendancePage> {
     });
   }
 
-  Future<void> _checkAuthAndFetch() async {
-    try {
-      final auth = await ApiService().authenticate();
-      final bool isLoggedIn = auth['isLoggedIn'] == true;
-      final role = (auth['role'] ?? auth['user']?['role'])?.toString();
+Future<void> _checkAuthAndFetch() async {
+  try {
+    final auth = await ApiService().authenticate();
+    final bool isLoggedIn = auth['isLoggedIn'] == true;
+    final role = (auth['role'] ?? auth['user']?['role'])?.toString();
 
-      if (!isLoggedIn) {
-        if (!mounted) return;
-        Navigator.of(context).pushReplacementNamed('/login');
-        return;
-      }
+    if (!isLoggedIn) {
+      if (!mounted) return;
+      Navigator.of(context).pushReplacementNamed('/login');
+      return;
+    }
 
-      if (role == 'student') {
-        if (!mounted) return;
-        Navigator.of(context).pushReplacementNamed('/student/dashboard');
-        return;
-      }
+    if (role == 'student') {
+      if (!mounted) return;
+      Navigator.of(context).pushReplacementNamed('/student/dashboard');
+      return;
+    }
 
-      final resp = await ApiService().dio.get('/api/attendance');
-      final data = resp.data;
-      final rawGroups = data['students'] as Map<dynamic, dynamic>?;
-
-      final Map<String, List<Student>> parsed = {};
-      if (rawGroups != null) {
-        rawGroups.forEach((key, value) {
-          final list = <Student>[];
-          if (value is List) {
-            for (final item in value) {
-              if (item is Map) list.add(Student.fromMap(Map<String, dynamic>.from(item)));
-            }
-          }
-          parsed[key.toString()] = list;
-        });
-      }
-
-      if (mounted) {
-        setState(() {
-          _groupedStudents = parsed;
-          _loading = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to load attendance: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-        setState(() {
-          _groupedStudents = {};
-          _loading = false;
-        });
-      }
+    // 1) Load cache immediately (if present)
+    final cached = await CacheService.loadAttendanceCache();
+    if (mounted && cached != null) {
+      final parsed = <String, List<Student>>{};
+   for (final entry in cached.entries) {
+  final k = entry.key;
+  final v = entry.value;
+  final list = <Student>[];
+  if (v is List) {
+    for (final item in v) {
+      if (item is Map) list.add(Student.fromMap(Map<String, dynamic>.from(item)));
     }
   }
+  parsed[k.toString()] = list;
+}
+
+
+      setState(() {
+        _groupedStudents = parsed;
+        _loading = false; // show UI instantly from cache
+      });
+    }
+
+    // 2) Decide whether to refresh from server (if cache missing or stale)
+    final cacheFresh = await CacheService.isAttendanceCacheFreshToday();
+    if (!cacheFresh) {
+      // fetch in background and update UI if newer arrives
+      try {
+        final resp = await ApiService().dio.get('/api/attendance');
+        final data = resp.data;
+        final rawGroups = data['students'] as Map<dynamic, dynamic>?;
+
+        final Map<String, List<Student>> parsed = {};
+if (rawGroups != null) {
+  for (final entry in rawGroups.entries) {
+    final key = entry.key;
+    final value = entry.value;
+    final list = <Student>[];
+    if (value is List) {
+      for (final item in value) {
+        if (item is Map) {
+          list.add(Student.fromMap(Map<String, dynamic>.from(item)));
+        }
+      }
+    }
+    parsed[key.toString()] = list;
+  }
+}
+
+
+        // Save fresh cache
+        if (rawGroups != null) {
+          await CacheService.saveAttendanceCache(Map<String, dynamic>.from(rawGroups));
+        }
+
+        // Update UI if we had no cache or data differs
+        if (mounted) {
+          final shouldUpdate = _groupedStudents.isEmpty || !_mapDeepEquals(_groupedStudents, parsed);
+          if (shouldUpdate) {
+            setState(() {
+              _groupedStudents = parsed;
+              _loading = false;
+            });
+          }
+        }
+      } catch (e) {
+        // on failure: if no cache shown, show error; else keep cached UI
+        if (mounted && _groupedStudents.isEmpty) {
+          setState(() {
+            _groupedStudents = {};
+            _loading = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to load attendance: ${e.toString()}')),
+          );
+        }
+      }
+    }
+  } catch (e) {
+    if (mounted) {
+      setState(() {
+        _groupedStudents = {};
+        _loading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Auth failed: ${e.toString()}')),
+      );
+    }
+  }
+}
+
+// helper
+bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) {
+  if (a.length != b.length) return false;
+  for (final k in a.keys) {
+    final la = a[k] ?? [];
+    final lb = b[k] ?? [];
+    if (la.length != lb.length) return false;
+    for (int i = 0; i < la.length; i++) {
+      if (la[i].id != lb[i].id) return false;
+    }
+  }
+  return true;
+}
 
   void _setStatus(String accNo, String status) {
     setState(() {
@@ -221,17 +288,25 @@ class _AttendancePageState extends State<AttendancePage> {
 
     try {
       await ApiService().dio.post('/api/attendance/mark', data: {'records': records});
-      if (!mounted) return;
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Attendance saved successfully!'),
-          backgroundColor: Colors.green,
-        ),
-      );
-      
-      await Future.delayed(const Duration(milliseconds: 500));
-      Navigator.of(context).pushReplacementNamed('/ad/attendance-records');
+
+  // Clear cached attendance so next open fetches fresh data
+  try {
+    await CacheService.clearAttendanceCache();
+  } catch (_) {
+    // ignore cache clear errors (non-fatal)
+  }
+
+  if (!mounted) return;
+  
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(
+      content: Text('Attendance saved successfully!'),
+      backgroundColor: Colors.green,
+    ),
+  );
+  
+  await Future.delayed(const Duration(milliseconds: 500));
+  Navigator.of(context).pushReplacementNamed('/ad/attendance-records');
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -349,20 +424,30 @@ class _AttendancePageState extends State<AttendancePage> {
                 ),
               ],
             ),
-            child: const Stack(
-              children: [
-                Center(
-                  child: SizedBox(
-                    width: 32,
-                    height: 32,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 3,
-                      valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF2563EB)),
-                    ),
-                  ),
+        child: Stack(
+  alignment: Alignment.center,
+  children: [
+              // ✅ Your logo with opacity (no tint)
+              Opacity(
+                opacity: 0.4, // adjust 0.0 - 1.0 for desired transparency
+                child: Image.asset(
+                  'assets/logo.png',
+                  width: 50,
+                  height: 50,
                 ),
-              ],
-            ),
+              ),
+    const SizedBox(
+      width: 42,
+      height: 42,
+      child: CircularProgressIndicator(
+        strokeWidth: 3,
+        valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF2563EB)),
+      ),
+    ),
+  ],
+),
+
+
           ),
           const SizedBox(height: 24),
           Text(

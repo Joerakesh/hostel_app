@@ -66,6 +66,7 @@ class _AttendanceRecordsPageState extends State<AttendanceRecordsPage> {
   bool _loading = true;
   String? _error;
   List<RawAttendance> _groups = [];
+  int? _expandedIndex;
 
   @override
   void initState() {
@@ -89,6 +90,9 @@ class _AttendanceRecordsPageState extends State<AttendanceRecordsPage> {
         return null;
       }).whereType<RawAttendance>().toList();
 
+      // Sort by date, most recent first
+      parsed.sort((a, b) => b.date.compareTo(a.date));
+
       setState(() {
         _groups = parsed;
         _loading = false;
@@ -102,92 +106,80 @@ class _AttendanceRecordsPageState extends State<AttendanceRecordsPage> {
   }
 
   String _formatDate(DateTime dt) {
-    // Example: Tue, 08 Oct 2025 11:14 AM
-    final wk = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    final mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    final day = wk[dt.weekday % 7];
-    final month = mon[dt.month - 1];
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final recordDay = DateTime(dt.year, dt.month, dt.day);
+    
+    if (recordDay == today) {
+      return 'Today, ${_formatTime(dt)}';
+    } else if (recordDay == today.subtract(const Duration(days: 1))) {
+      return 'Yesterday, ${_formatTime(dt)}';
+    } else {
+      final month = dt.month.toString().padLeft(2, '0');
+      final day = dt.day.toString().padLeft(2, '0');
+      return '$day/$month/${dt.year}, ${_formatTime(dt)}';
+    }
+  }
+
+  String _formatTime(DateTime dt) {
     final hour = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
     final minute = dt.minute.toString().padLeft(2, '0');
     final ampm = dt.hour >= 12 ? 'PM' : 'AM';
-    return '$day, ${dt.day} $month ${dt.year}  $hour:$minute $ampm';
+    return '$hour:$minute $ampm';
   }
 
-  Color _statusBg(String status) {
-    final s = status.toLowerCase();
-    if (s == 'present') return Colors.green.shade100;
-    if (s == 'leave') return Colors.orange.shade100;
-    return Colors.red.shade100;
-  }
-
-  Color _statusText(String status) {
-    final s = status.toLowerCase();
-    if (s == 'present') return Colors.green.shade800;
-    if (s == 'leave') return Colors.orange.shade800;
-    return Colors.red.shade800;
-  }
-
-  Widget _buildRecordRow(RecordEntry r, int index, bool isCompact) {
-    // For compact screens use vertical card rows, otherwise a table-like row
-    if (isCompact) {
-      return Container(
-        margin: const EdgeInsets.symmetric(vertical: 6),
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(8),
-          boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4)],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('${index + 1}. ${r.name}', style: const TextStyle(fontWeight: FontWeight.w600)),
-            const SizedBox(height: 6),
-            Row(
-              children: [
-                Text('Room: ${r.roomNo}', style: const TextStyle(fontSize: 13)),
-                const SizedBox(width: 12),
-                Text('Acc: ${r.accountNumber}', style: const TextStyle(fontSize: 13)),
-                const Spacer(),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: _statusBg(r.status),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(r.status.toUpperCase(),
-                      style: TextStyle(color: _statusText(r.status), fontWeight: FontWeight.bold, fontSize: 12)),
-                )
-              ],
-            )
-          ],
-        ),
-      );
+  Map<String, int> _getStatusCount(List<RecordEntry> records) {
+    int present = 0, absent = 0, leave = 0;
+    for (final record in records) {
+      switch (record.status.toLowerCase()) {
+        case 'present':
+          present++;
+          break;
+        case 'absent':
+          absent++;
+          break;
+        case 'leave':
+          leave++;
+          break;
+      }
     }
+    return {'present': present, 'absent': absent, 'leave': leave};
+  }
 
-    // wide/table row
+  Widget _buildStatusChip(String status, int count, Color color) {
     return Container(
-      color: index % 2 == 0 ? Colors.transparent : Colors.grey.shade50,
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          SizedBox(width: 36, child: Text('${index + 1}')),
-          Expanded(flex: 3, child: Text(r.name)),
-          Expanded(flex: 2, child: Text(r.roomNo)),
-          Expanded(flex: 2, child: Text(r.accountNumber)),
-          SizedBox(
-            width: 110,
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: _statusBg(r.status),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(r.status.toUpperCase(),
-                    style: TextStyle(color: _statusText(r.status), fontWeight: FontWeight.bold, fontSize: 12)),
-              ),
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            '$count',
+            style: TextStyle(
+              color: color,
+              fontWeight: FontWeight.w700,
+              fontSize: 12,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            status,
+            style: TextStyle(
+              color: Colors.grey.shade600,
+              fontSize: 12,
             ),
           ),
         ],
@@ -195,83 +187,188 @@ class _AttendanceRecordsPageState extends State<AttendanceRecordsPage> {
     );
   }
 
-  Widget _buildGroupCard(RawAttendance g, bool isCompact) {
+  Widget _buildStudentRow(RecordEntry record, int index) {
+    Color statusColor;
+    IconData statusIcon;
+    
+    switch (record.status.toLowerCase()) {
+      case 'present':
+        statusColor = Colors.green;
+        statusIcon = Icons.check_circle;
+        break;
+      case 'absent':
+        statusColor = Colors.red;
+        statusIcon = Icons.cancel;
+        break;
+      case 'leave':
+        statusColor = Colors.orange;
+        statusIcon = Icons.beach_access;
+        break;
+      default:
+        statusColor = Colors.grey;
+        statusIcon = Icons.help;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 24,
+            height: 24,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              '${index + 1}',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey.shade600,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  record.name,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Room ${record.roomNo} • Acc: ${record.accountNumber}',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey.shade600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: statusColor.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(statusIcon, color: statusColor, size: 14),
+                const SizedBox(width: 6),
+                Text(
+                  record.status.toUpperCase(),
+                  style: TextStyle(
+                    color: statusColor,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAttendanceCard(RawAttendance attendance, int index) {
+    final statusCount = _getStatusCount(attendance.records);
+    final isExpanded = _expandedIndex == index;
+
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 8),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      elevation: 2,
+      elevation: 1,
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            // header
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Assistant Director: ${g.adUsername}',
-                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 6),
-                      Text('Date: ${_formatDate(g.date)}', style: const TextStyle(color: Colors.black54)),
-                    ],
-                  ),
-                ),
-                if (g.type != null)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.grey.shade300),
-                    ),
-                    child: Text(g.type!, style: const TextStyle(fontWeight: FontWeight.w600)),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 12),
-
-            // records
-            if (g.records.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 20),
-                child: Text('No records for this group.'),
-              )
-            else if (isCompact)
-              Column(
-                children: g.records
-                    .asMap()
-                    .entries
-                    .map((e) => _buildRecordRow(e.value, e.key, true))
-                    .toList(),
-              )
-            else
-              // table-like view
-              Column(
+            // Header - Always visible
+            GestureDetector(
+              onTap: () {
+                setState(() {
+                  _expandedIndex = isExpanded ? null : index;
+                });
+              },
+              child: Row(
                 children: [
-                  // table header
                   Container(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(6),
+                      color: Colors.blue.shade50,
+                      shape: BoxShape.circle,
                     ),
-                    child: Row(
-                      children: const [
-                        SizedBox(width: 36, child: Text('#', style: TextStyle(fontWeight: FontWeight.w700))),
-                        Expanded(flex: 3, child: Text('Name', style: TextStyle(fontWeight: FontWeight.w700))),
-                        Expanded(flex: 2, child: Text('Room No', style: TextStyle(fontWeight: FontWeight.w700))),
-                        Expanded(flex: 2, child: Text('Acc No', style: TextStyle(fontWeight: FontWeight.w700))),
-                        SizedBox(width: 110, child: Text('Status', style: TextStyle(fontWeight: FontWeight.w700))),
+                    child: const Icon(Icons.calendar_today, color: Colors.blue, size: 20),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _formatDate(attendance.date),
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'By: ${attendance.adUsername}',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
                       ],
                     ),
                   ),
-                  const SizedBox(height: 6),
-                  ...g.records.asMap().entries.map((e) => _buildRecordRow(e.value, e.key, false)).toList(),
+                  // Status summary chips
+                  Row(
+                    children: [
+                      _buildStatusChip('Present', statusCount['present']!, Colors.green),
+                      const SizedBox(width: 8),
+                      _buildStatusChip('Absent', statusCount['absent']!, Colors.red),
+                      if (statusCount['leave']! > 0) ...[
+                        const SizedBox(width: 8),
+                        _buildStatusChip('Leave', statusCount['leave']!, Colors.orange),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(width: 12),
+                  Icon(
+                    isExpanded ? Icons.expand_less : Icons.expand_more,
+                    color: Colors.grey.shade500,
+                  ),
                 ],
               ),
+            ),
+
+            // Expandable content
+            if (isExpanded) ...[
+              const SizedBox(height: 16),
+              const Divider(),
+              const SizedBox(height: 12),
+              // Student list
+              ...attendance.records.asMap().entries.map(
+                (entry) => _buildStudentRow(entry.value, entry.key),
+              ),
+            ],
           ],
         ),
       ),
@@ -280,61 +377,98 @@ class _AttendanceRecordsPageState extends State<AttendanceRecordsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final isCompact = MediaQuery.of(context).size.width < 700;
-
     return Scaffold(
       appBar: AppBar(
-        title: const Text('E-Attendance Records'),
-        backgroundColor: Colors.blue.shade900,
+        title: const Text(
+          'Attendance Records',
+          style: TextStyle(fontWeight: FontWeight.w600),
+        ),
+        backgroundColor: Colors.white,
+        elevation: 1,
+        foregroundColor: Colors.black,
         actions: [
           IconButton(
             onPressed: _fetchAttendanceRecords,
-            tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh',
           ),
-          TextButton(
+          IconButton(
             onPressed: () => Navigator.of(context).pushReplacementNamed('/ad/dashboard'),
-            child: const Text('Dashboard', style: TextStyle(color: Colors.white)),
+            icon: const Icon(Icons.home),
+            tooltip: 'Dashboard',
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 1000),
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : _error != null
-                    ? Column(
+      body: _loading
+          ? const Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text('Loading attendance records...'),
+                ],
+              ),
+            )
+          : _error != null
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.error_outline, color: Colors.red.shade400, size: 48),
+                      const SizedBox(height: 16),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 32),
+                        child: Text(
+                          _error!,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.grey.shade600),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      ElevatedButton(
+                        onPressed: _fetchAttendanceRecords,
+                        child: const Text('Try Again'),
+                      ),
+                    ],
+                  ),
+                )
+              : _groups.isEmpty
+                  ? Center(
+                      child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Text(_error!, style: const TextStyle(color: Colors.red)),
-                          const SizedBox(height: 12),
-                          ElevatedButton(onPressed: _fetchAttendanceRecords, child: const Text('Retry')),
-                        ],
-                      )
-                    : _groups.isEmpty
-                        ? Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Text('No attendance records found.'),
-                              const SizedBox(height: 12),
-                              ElevatedButton(onPressed: _fetchAttendanceRecords, child: const Text('Refresh')),
-                            ],
-                          )
-                        : ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: _groups.length,
-                            physics: const BouncingScrollPhysics(),
-                            itemBuilder: (context, idx) {
-                              final g = _groups[idx];
-                              return _buildGroupCard(g, isCompact);
-                            },
+                          Icon(Icons.list_alt, color: Colors.grey.shade400, size: 64),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'No Attendance Records',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
-          ),
-        ),
-      ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Attendance records will appear here once marked',
+                            style: TextStyle(color: Colors.grey.shade500),
+                          ),
+                          const SizedBox(height: 20),
+                          ElevatedButton(
+                            onPressed: _fetchAttendanceRecords,
+                            child: const Text('Refresh'),
+                          ),
+                        ],
+                      ),
+                    )
+                  : Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: ListView.builder(
+                        itemCount: _groups.length,
+                        itemBuilder: (context, index) {
+                          return _buildAttendanceCard(_groups[index], index);
+                        },
+                      ),
+                    ),
     );
   }
 }

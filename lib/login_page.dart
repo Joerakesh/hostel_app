@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'api_service.dart';
+import 'services/cache_service.dart'; 
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -29,6 +30,20 @@ class _LoginPageState extends State<LoginPage> {
       final role = data['user']?['role'] ?? data['role'];
 
       if (role == 'ad') {
+        // after successful login, preload attendance cache
+try {
+  // call your endpoint that returns grouped students (same used in AttendancePage)
+  final resp = await ApiService().dio.get('/api/attendance'); // adjust endpoint if different
+  final data = resp.data;
+  if (data != null && data['students'] != null) {
+    // Save raw grouped students map (ensure it's Map<String, dynamic>)
+    await CacheService.saveAttendanceCache(Map<String, dynamic>.from(data['students']));
+  }
+} catch (e) {
+  // don't block login if caching fails — optionally log or show non-blocking msg
+  // print('Preload cache failed: $e');
+}
+
         if (!mounted) return;
         Navigator.of(context).pushReplacementNamed('/ad/dashboard');
       } else if (role == 'director') {
