@@ -1,4 +1,4 @@
-name: hostel_app
+name: sacred_heart_hostel
 description: "Sacred Heart Hostel App"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
@@ -49,6 +49,13 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^5.0.0
+  launcher_name: ^1.0.2
+
+launcher_name:
+  default: "Sacred Heart Hostel"
+  # optional localized names:
+  # es: "Albergue Sagrado Corazón"
+  # fr: "Auberge Sacré-Coeur"
 
 flutter_icons:
   android: true
