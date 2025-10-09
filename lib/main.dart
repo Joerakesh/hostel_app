@@ -86,8 +86,8 @@ class MyApp extends StatelessWidget {
   }
 }
 
-/// Loading page: checks /api/auth/authenticate and redirects accordingly.
-/// If no session, routes to /login.
+/// Loading page: requests notification permission first, then navigates to Login.
+/// This enforces the flow: user must allow notifications, then we go to login.
 class LoadingPage extends StatefulWidget {
   const LoadingPage({super.key});
   @override
@@ -95,167 +95,195 @@ class LoadingPage extends StatefulWidget {
 }
 
 class _LoadingPageState extends State<LoadingPage> {
+  bool _requesting = false;
   String? _error;
-  String? role;
-  String? userId;
+  bool _permissionGranted = false;
+  bool _permissionDeniedPermanently = false;
 
   @override
   void initState() {
     super.initState();
-    _checkAuth();
+    // Immediately request permission on startup
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _askForNotificationPermission();
+    });
   }
 
-  Future<void> _checkAuth() async {
-    final sw = Stopwatch()..start();
+  Future<void> _askForNotificationPermission() async {
+    setState(() {
+      _requesting = true;
+      _error = null;
+    });
+
+    NotificationSettings? result;
     try {
-      // Fast cached authenticate (should be instant most times)
-      final data = await ApiService().authenticate();
-      sw.stop();
-      debugPrint(
-        '[auth] authenticate() returned in ${sw.elapsedMilliseconds}ms',
-      );
+      result = await FirebaseMessaging.instance
+          .requestPermission(
+            alert: true,
+            announcement: false,
+            badge: true,
+            carPlay: false,
+            criticalAlert: false,
+            provisional: true,
+            sound: true,
+          )
+          .timeout(const Duration(seconds: 10));
+    } on TimeoutException {
+      result = null;
+    } catch (e) {
+      debugPrint('[notifications] requestPermission error: $e');
+      result = null;
+    }
 
-      final bool isLoggedIn = data['isLoggedIn'] == true;
-      role = (data['role'] ?? data['user']?['role'])?.toString();
-      userId = data['user']?['id']?.toString();
+    // If result is null we treat as denied / timed out.
+    final allowed =
+        result != null &&
+        (result.authorizationStatus == AuthorizationStatus.authorized ||
+            result.authorizationStatus == AuthorizationStatus.provisional);
 
-      if (!isLoggedIn) {
+    if (allowed) {
+      if (!mounted) return;
+      setState(() {
+        _permissionGranted = true;
+      });
+      // Navigate to login after a brief visual confirmation
+      Future.delayed(const Duration(milliseconds: 250), () {
         if (!mounted) return;
         Navigator.of(context).pushReplacementNamed('/login');
-        return;
-      }
-
-      // Navigate based on role RIGHT AWAY (do not wait for notification setup)
-      if (role == 'ad') {
-        if (!mounted) return;
-        Navigator.of(context).pushReplacementNamed('/ad/dashboard');
-      } else if (role == 'director') {
-        if (!mounted) return;
-        Navigator.of(
-          context,
-        ).pushReplacementNamed('/login'); // adjust as needed
-      } else if (role == 'student') {
-        if (!mounted) return;
-        Navigator.of(
-          context,
-        ).pushReplacementNamed('/login'); // adjust as needed
-      } else {
-        setState(() {
-          _error = "Unknown role from server. Contact admin.";
-        });
-      }
-
-      // --- Run notification setup in background (non-blocking) ---
-      // It should not block navigation. Use short timeouts and guard navigation via _safeNavigate.
-      () async {
-        final bgSw = Stopwatch()..start();
-        try {
-          // request permission (may show dialog)
-          try {
-            await NotificationService.requestPermission().timeout(
-              const Duration(seconds: 6),
-            );
-          } on TimeoutException {
-            debugPrint('[notifications] requestPermission timed out');
-          } catch (e) {
-            debugPrint('[notifications] requestPermission error: $e');
-          }
-
-          // set foreground handler (fast, local). This uses BuildContext for in-app UI.
-          // Only call if still mounted; otherwise it's okay to skip.
-          if (mounted) {
-            try {
-              NotificationService.setForegroundNotificationHandler(context);
-            } catch (e) {
-              debugPrint(
-                '[notifications] setForegroundNotificationHandler error: $e',
-              );
-            }
-          }
-
-          // save FCM token to server, but don't block UI: use a short timeout
-          try {
-            await NotificationService.saveFcmTokenToServer(
-              userId: userId,
-            ).timeout(const Duration(seconds: 6));
-          } on TimeoutException {
-            debugPrint('[notifications] saveFcmTokenToServer timed out');
-          } catch (e) {
-            debugPrint('[notifications] saveFcmTokenToServer failed: $e');
-          }
-
-          // fetch initial message (rare but quick). If found, navigate safely.
-          try {
-            final msg = await NotificationService.getInitialMessage().timeout(
-              const Duration(seconds: 4),
-            );
-            if (msg != null) {
-              final route = msg.data['route'] ?? msg.data['screen'];
-              if (route != null && route is String && route.isNotEmpty) {
-                _safeNavigate(route);
-              }
-            }
-          } on TimeoutException {
-            debugPrint('[notifications] getInitialMessage timed out');
-          } catch (e) {
-            debugPrint('[notifications] getInitialMessage error: $e');
-          }
-        } catch (e) {
-          debugPrint('[notifications] background setup failed: $e');
-        } finally {
-          bgSw.stop();
-          debugPrint(
-            '[notifications] background setup finished in ${bgSw.elapsedMilliseconds}ms',
-          );
-        }
-      }();
-    } catch (e) {
-      debugPrint('[auth] authenticate() threw: $e');
-      setState(() {
-        _error = "Cannot reach server. Tap retry or continue to login.";
       });
+      return;
     }
+
+    // Not allowed — determine current settings (best-effort)
+    NotificationSettings? current;
+    try {
+      current = await FirebaseMessaging.instance
+          .getNotificationSettings()
+          .timeout(const Duration(seconds: 6));
+    } on TimeoutException {
+      current = null;
+    } catch (_) {
+      current = null;
+    }
+
+    bool permanentlyDenied = false;
+    if (current != null) {
+      // On some platforms 'denied' is irreversible without OS settings.
+      permanentlyDenied =
+          current.authorizationStatus == AuthorizationStatus.denied;
+    }
+
+    setState(() {
+      _permissionDeniedPermanently = permanentlyDenied;
+      _permissionGranted = false;
+      _requesting = false;
+    });
+  }
+
+  // Show a simple instructions dialog guiding the user to the OS settings.
+  Future<void> _showOpenSettingsInstructions() async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Enable Notifications'),
+          content: const Text(
+            'Please open your device Settings → Apps → Sacred Heart Hostel → Notifications and enable notifications.\n\n'
+            "If your device shows 'Blocked', toggle it on and return to the app.",
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildRequesting() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: const [
+        CircularProgressIndicator(strokeWidth: 4, color: Colors.blue),
+        SizedBox(height: 12),
+        Text('Requesting notification permission...'),
+      ],
+    );
+  }
+
+  Widget _buildDeniedUI() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.notifications_off, size: 64, color: Colors.red.shade400),
+        const SizedBox(height: 16),
+        Text(
+          _permissionDeniedPermanently
+              ? 'Notifications are blocked. Please enable them in Settings to continue.'
+              : 'Notifications are disabled. The app needs notification permission to continue.',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 16),
+        ),
+        const SizedBox(height: 12),
+        if (_error != null) ...[
+          Text(_error!, style: const TextStyle(color: Colors.red)),
+          const SizedBox(height: 8),
+        ],
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ElevatedButton.icon(
+              onPressed: _askForNotificationPermission,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Try Again'),
+            ),
+            const SizedBox(width: 12),
+            ElevatedButton.icon(
+              onPressed: _showOpenSettingsInstructions,
+              icon: const Icon(Icons.settings),
+              label: const Text('Open Settings'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.grey.shade200,
+                foregroundColor: Colors.black,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        TextButton(
+          onPressed: () {
+            // Navigation is intentionally blocked until permission is granted per your request.
+            // If you want to allow skipping, uncomment the next line:
+            // Navigator.of(context).pushReplacementNamed('/login');
+          },
+          child: const Text('Need help? Contact support'),
+        ),
+      ],
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Center(
-        child: _error == null
+        child: _requesting
+            ? _buildRequesting()
+            : _permissionGranted
             ? Column(
                 mainAxisSize: MainAxisSize.min,
                 children: const [
-                  CircularProgressIndicator(
-                    strokeWidth: 4,
+                  Icon(
+                    Icons.notifications_active,
+                    size: 64,
                     color: Colors.green,
-                    backgroundColor: Colors.white,
                   ),
                   SizedBox(height: 12),
-                  Text('Checking session...'),
+                  Text('Notification permission granted. Redirecting...'),
                 ],
               )
-            : Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _error!,
-                    style: const TextStyle(color: Colors.red),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 12),
-                  ElevatedButton(
-                    onPressed: _checkAuth,
-                    child: const Text('Retry'),
-                  ),
-                  const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: () {
-                      Navigator.of(context).pushReplacementNamed('/login');
-                    },
-                    child: const Text('Continue to Login'),
-                  ),
-                ],
-              ),
+            : _buildDeniedUI(),
       ),
     );
   }
