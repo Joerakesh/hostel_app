@@ -74,7 +74,8 @@ class _AdDashboardState extends State<AdDashboard> {
           return;
         }
         final networkUsername = verified['username']?.toString();
-        if (networkUsername != null && mounted) setState(() => adName = networkUsername);
+        if (networkUsername != null && mounted)
+          setState(() => adName = networkUsername);
       }
     } catch (e) {
       // fallback to login on unexpected error
@@ -100,9 +101,8 @@ class _AdDashboardState extends State<AdDashboard> {
   }
 
   Future<void> _logout() async {
-    await ApiService().logout();
     if (!mounted) return;
-    Navigator.of(context).pushReplacementNamed('/login');
+    Navigator.of(context).pushReplacementNamed('/logout');
   }
 
   Widget _buildActionCard({
@@ -115,18 +115,13 @@ class _AdDashboardState extends State<AdDashboard> {
   }) {
     return Card(
       elevation: 2,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [
-              color.withOpacity(0.1),
-              color.withOpacity(0.05),
-            ],
+            colors: [color.withOpacity(0.1), color.withOpacity(0.05)],
           ),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: color.withOpacity(0.2), width: 1),
@@ -225,7 +220,9 @@ class _AdDashboardState extends State<AdDashboard> {
                         height: 32,
                         child: CircularProgressIndicator(
                           strokeWidth: 3,
-                          valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF3B82F6)),
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Color(0xFF3B82F6),
+                          ),
                         ),
                       ),
                     ),
@@ -248,7 +245,9 @@ class _AdDashboardState extends State<AdDashboard> {
     }
 
     final greeting = _greetingForHour(currentTime.hour);
-    final formattedDate = MaterialLocalizations.of(context).formatFullDate(currentTime);
+    final formattedDate = MaterialLocalizations.of(
+      context,
+    ).formatFullDate(currentTime);
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
@@ -367,7 +366,10 @@ class _AdDashboardState extends State<AdDashboard> {
                     const SizedBox(height: 12),
                     // Date info
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.white.withOpacity(0.09),
                         borderRadius: BorderRadius.circular(10),
@@ -375,7 +377,11 @@ class _AdDashboardState extends State<AdDashboard> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.calendar_today, color: Colors.white.withOpacity(0.85), size: 16),
+                          Icon(
+                            Icons.calendar_today,
+                            color: Colors.white.withOpacity(0.85),
+                            size: 16,
+                          ),
                           const SizedBox(width: 8),
                           Text(
                             formattedDate,
@@ -417,7 +423,9 @@ class _AdDashboardState extends State<AdDashboard> {
                     disabled: redirectingAttendance,
                     onTap: () {
                       setState(() => redirectingAttendance = true);
-                      Navigator.of(context).pushNamed('/ad/take-attendance').then((_) {
+                      Navigator.of(
+                        context,
+                      ).pushNamed('/ad/take-attendance').then((_) {
                         if (!mounted) return;
                         setState(() => redirectingAttendance = false);
                       });
@@ -432,7 +440,9 @@ class _AdDashboardState extends State<AdDashboard> {
                     disabled: redirectingRecords,
                     onTap: () {
                       setState(() => redirectingRecords = true);
-                      Navigator.of(context).pushNamed('/ad/attendance-records').then((_) {
+                      Navigator.of(
+                        context,
+                      ).pushNamed('/ad/attendance-records').then((_) {
                         if (!mounted) return;
                         setState(() => redirectingRecords = false);
                       });
@@ -476,13 +486,7 @@ class _AdDashboardState extends State<AdDashboard> {
             color: Colors.black87,
           ),
         ),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 12,
-            color: Colors.grey[600],
-          ),
-        ),
+        Text(label, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
       ],
     );
   }
