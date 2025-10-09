@@ -13,20 +13,23 @@ class ApiService {
   static final ApiService _instance = ApiService._privateConstructor();
   factory ApiService() => _instance;
 
+  // Main HTTP Client
   late Dio dio;
+
+  // persistent cookie storage
   late PersistCookieJar cookieJar;
 
-  // IMPORTANT: set your backend base URL here (no trailing slash needed)
-  static const String baseUrl = "https://sh-backend.devnoel.org";
+  // Backend URL
+  static const String baseUrl = "https://hostel-backend-kappa.vercel.app";
 
-  /// Initialize cookie jar and Dio. Call this in main() before runApp().
+  // Initialize cookie jar and Dio. Call this in main() before runApp().
+  // Initializes Dio, cookies, interceptors, and restores token
   Future<void> init() async {
     final docs = await getApplicationDocumentsDirectory();
     final cookieDir = "${docs.path}/.cookies/";
     final cookieDirFile = Directory(cookieDir);
     if (!await cookieDirFile.exists())
       await cookieDirFile.create(recursive: true);
-
     cookieJar = PersistCookieJar(storage: FileStorage(cookieDir));
 
     dio = Dio(
