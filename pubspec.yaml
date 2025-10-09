@@ -41,6 +41,7 @@ dependencies:
   firebase_core: ^2.14.0 # initialize Firebase
   firebase_messaging: ^14.6.0 # FCM
   flutter_local_notifications: ^19.4.2
+  http: ^1.5.0
 
 dev_dependencies:
   flutter_test:
