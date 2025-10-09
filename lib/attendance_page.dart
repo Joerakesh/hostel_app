@@ -1,9 +1,13 @@
 // lib/attendance_page.dart
 
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'api_service.dart';
 import 'services/cache_service.dart';
+import 'dart:convert';
+import 'package:dio/dio.dart';
+
 class Student {
   final String id;
   final String name;
@@ -11,7 +15,7 @@ class Student {
   final dynamic accNo;
   final String roomNo;
   final bool leave;
-  
+
   Student({
     required this.id,
     required this.name,
@@ -69,128 +73,136 @@ class _AttendancePageState extends State<AttendancePage> {
     });
   }
 
-Future<void> _checkAuthAndFetch() async {
-  try {
-    final auth = await ApiService().authenticate();
-    final bool isLoggedIn = auth['isLoggedIn'] == true;
-    final role = (auth['role'] ?? auth['user']?['role'])?.toString();
+  Future<void> _checkAuthAndFetch() async {
+    try {
+      final auth = await ApiService().authenticate();
+      final bool isLoggedIn = auth['isLoggedIn'] == true;
+      final role = (auth['role'] ?? auth['user']?['role'])?.toString();
 
-    if (!isLoggedIn) {
-      if (!mounted) return;
-      Navigator.of(context).pushReplacementNamed('/login');
-      return;
-    }
-
-    if (role == 'student') {
-      if (!mounted) return;
-      Navigator.of(context).pushReplacementNamed('/student/dashboard');
-      return;
-    }
-
-    // 1) Load cache immediately (if present)
-    final cached = await CacheService.loadAttendanceCache();
-    if (mounted && cached != null) {
-      final parsed = <String, List<Student>>{};
-   for (final entry in cached.entries) {
-  final k = entry.key;
-  final v = entry.value;
-  final list = <Student>[];
-  if (v is List) {
-    for (final item in v) {
-      if (item is Map) list.add(Student.fromMap(Map<String, dynamic>.from(item)));
-    }
-  }
-  parsed[k.toString()] = list;
-}
-
-
-      setState(() {
-        _groupedStudents = parsed;
-        _loading = false; // show UI instantly from cache
-      });
-    }
-
-    // 2) Decide whether to refresh from server (if cache missing or stale)
-    final cacheFresh = await CacheService.isAttendanceCacheFreshToday();
-    if (!cacheFresh) {
-      // fetch in background and update UI if newer arrives
-      try {
-        final resp = await ApiService().dio.get('/api/attendance');
-        final data = resp.data;
-        final rawGroups = data['students'] as Map<dynamic, dynamic>?;
-
-        final Map<String, List<Student>> parsed = {};
-if (rawGroups != null) {
-  for (final entry in rawGroups.entries) {
-    final key = entry.key;
-    final value = entry.value;
-    final list = <Student>[];
-    if (value is List) {
-      for (final item in value) {
-        if (item is Map) {
-          list.add(Student.fromMap(Map<String, dynamic>.from(item)));
-        }
+      if (!isLoggedIn) {
+        if (!mounted) return;
+        Navigator.of(context).pushReplacementNamed('/login');
+        return;
       }
-    }
-    parsed[key.toString()] = list;
-  }
-}
 
+      if (role == 'student') {
+        if (!mounted) return;
+        Navigator.of(context).pushReplacementNamed('/student/dashboard');
+        return;
+      }
 
-        // Save fresh cache
-        if (rawGroups != null) {
-          await CacheService.saveAttendanceCache(Map<String, dynamic>.from(rawGroups));
+      // 1) Load cache immediately (if present)
+      final cached = await CacheService.loadAttendanceCache();
+      if (mounted && cached != null) {
+        final parsed = <String, List<Student>>{};
+        for (final entry in cached.entries) {
+          final k = entry.key;
+          final v = entry.value;
+          final list = <Student>[];
+          if (v is List) {
+            for (final item in v) {
+              if (item is Map)
+                list.add(Student.fromMap(Map<String, dynamic>.from(item)));
+            }
+          }
+          parsed[k.toString()] = list;
         }
 
-        // Update UI if we had no cache or data differs
-        if (mounted) {
-          final shouldUpdate = _groupedStudents.isEmpty || !_mapDeepEquals(_groupedStudents, parsed);
-          if (shouldUpdate) {
+        setState(() {
+          _groupedStudents = parsed;
+          _loading = false; // show UI instantly from cache
+        });
+      }
+
+      // 2) Decide whether to refresh from server (if cache missing or stale)
+      final cacheFresh = await CacheService.isAttendanceCacheFreshToday();
+      if (!cacheFresh) {
+        // fetch in background and update UI if newer arrives
+        try {
+          final resp = await ApiService().dio.get('/api/attendance');
+          final data = resp.data;
+          final rawGroups = data['students'] as Map<dynamic, dynamic>?;
+
+          final Map<String, List<Student>> parsed = {};
+          if (rawGroups != null) {
+            for (final entry in rawGroups.entries) {
+              final key = entry.key;
+              final value = entry.value;
+              final list = <Student>[];
+              if (value is List) {
+                for (final item in value) {
+                  if (item is Map) {
+                    list.add(Student.fromMap(Map<String, dynamic>.from(item)));
+                  }
+                }
+              }
+              parsed[key.toString()] = list;
+            }
+          }
+
+          // Save fresh cache
+          if (rawGroups != null) {
+            await CacheService.saveAttendanceCache(
+              Map<String, dynamic>.from(rawGroups),
+            );
+          }
+
+          // Update UI if we had no cache or data differs
+          if (mounted) {
+            final shouldUpdate =
+                _groupedStudents.isEmpty ||
+                !_mapDeepEquals(_groupedStudents, parsed);
+            if (shouldUpdate) {
+              setState(() {
+                _groupedStudents = parsed;
+                _loading = false;
+              });
+            }
+          }
+        } catch (e) {
+          // on failure: if no cache shown, show error; else keep cached UI
+          if (mounted && _groupedStudents.isEmpty) {
             setState(() {
-              _groupedStudents = parsed;
+              _groupedStudents = {};
               _loading = false;
             });
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Failed to load attendance: ${e.toString()}'),
+              ),
+            );
           }
         }
-      } catch (e) {
-        // on failure: if no cache shown, show error; else keep cached UI
-        if (mounted && _groupedStudents.isEmpty) {
-          setState(() {
-            _groupedStudents = {};
-            _loading = false;
-          });
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to load attendance: ${e.toString()}')),
-          );
-        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _groupedStudents = {};
+          _loading = false;
+        });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Auth failed: ${e.toString()}')));
       }
     }
-  } catch (e) {
-    if (mounted) {
-      setState(() {
-        _groupedStudents = {};
-        _loading = false;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Auth failed: ${e.toString()}')),
-      );
-    }
   }
-}
 
-// helper
-bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) {
-  if (a.length != b.length) return false;
-  for (final k in a.keys) {
-    final la = a[k] ?? [];
-    final lb = b[k] ?? [];
-    if (la.length != lb.length) return false;
-    for (int i = 0; i < la.length; i++) {
-      if (la[i].id != lb[i].id) return false;
+  // helper
+  bool _mapDeepEquals(
+    Map<String, List<Student>> a,
+    Map<String, List<Student>> b,
+  ) {
+    if (a.length != b.length) return false;
+    for (final k in a.keys) {
+      final la = a[k] ?? [];
+      final lb = b[k] ?? [];
+      if (la.length != lb.length) return false;
+      for (int i = 0; i < la.length; i++) {
+        if (la[i].id != lb[i].id) return false;
+      }
     }
+    return true;
   }
-  return true;
-}
 
   void _setStatus(String accNo, String status) {
     setState(() {
@@ -202,10 +214,15 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
     int present = 0, absent = 0, leave = 0;
     _groupedStudents.values.forEach((students) {
       for (final s in students) {
-        final status = s.leave ? 'leave' : (_statusMap[s.accNo.toString()] ?? 'present');
-        if (status == 'leave') leave++;
-        else if (status == 'absent') absent++;
-        else present++;
+        final status = s.leave
+            ? 'leave'
+            : (_statusMap[s.accNo.toString()] ?? 'present');
+        if (status == 'leave')
+          leave++;
+        else if (status == 'absent')
+          absent++;
+        else
+          present++;
       }
     });
     return {'present': present, 'absent': absent, 'leave': leave};
@@ -228,7 +245,7 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
 
   Future<void> _handleSave() async {
     if (_saving) return;
-    
+
     final summary = _getSummary();
     final confirmed = await showDialog<bool>(
       context: context,
@@ -248,9 +265,17 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
               ),
               child: Column(
                 children: [
-                  _buildSummaryRow('Present', summary['present']!, Colors.green),
+                  _buildSummaryRow(
+                    'Present',
+                    summary['present']!,
+                    Colors.green,
+                  ),
                   _buildSummaryRow('Absent', summary['absent']!, Colors.red),
-                  _buildSummaryRow('On Leave', summary['leave']!, Colors.orange),
+                  _buildSummaryRow(
+                    'On Leave',
+                    summary['leave']!,
+                    Colors.orange,
+                  ),
                 ],
               ),
             ),
@@ -269,7 +294,7 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
         ],
       ),
     );
-    
+
     if (confirmed != true) return;
 
     setState(() => _saving = true);
@@ -281,33 +306,74 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
           'roomNo': s.roomNo,
           'accountNumber': s.accNo,
           'name': s.name,
-          'status': s.leave ? 'leave' : (_statusMap[s.accNo.toString()] ?? 'present'),
+          'status': s.leave
+              ? 'leave'
+              : (_statusMap[s.accNo.toString()] ?? 'present'),
         });
       }
     });
+    debugPrint('Attendance payload: ${jsonEncode({'records': records})}');
 
     try {
-      await ApiService().dio.post('/api/attendance/mark', data: {'records': records});
+      final resp = await ApiService().dio.post(
+        '/api/attendance/mark',
+        data: {'records': records},
+      );
 
-  // Clear cached attendance so next open fetches fresh data
-  try {
-    await CacheService.clearAttendanceCache();
-  } catch (_) {
-    // ignore cache clear errors (non-fatal)
-  }
+      debugPrint(
+        'Attendance POST status: ${resp.statusCode} body: ${resp.data}',
+      );
 
-  if (!mounted) return;
-  
-  ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(
-      content: Text('Attendance saved successfully!'),
-      backgroundColor: Colors.green,
-    ),
-  );
-  
-  await Future.delayed(const Duration(milliseconds: 500));
-  Navigator.of(context).pushReplacementNamed('/ad/attendance-records');
+      // Clear cached attendance ...
+      try {
+        await CacheService.clearAttendanceCache();
+      } catch (_) {}
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Attendance saved successfully!'),
+          backgroundColor: Colors.green,
+        ),
+      );
+
+      await Future.delayed(const Duration(milliseconds: 500));
+      Navigator.of(context).pushReplacementNamed('/ad/attendance-records');
+    } on DioException catch (e) {
+      String msg = e.message ?? e.toString();
+      if (e.response != null) {
+        msg = 'Status ${e.response?.statusCode} - ${e.response?.data}';
+        debugPrint(
+          'Attendance POST failed response headers: ${e.response?.headers}',
+        );
+        debugPrint('Attendance POST failed response data: ${e.response?.data}');
+      } else {
+        debugPrint('Attendance POST DioException (no response): $e');
+      }
+
+      // Also print cookies we have right now
+      try {
+        final cookies = await ApiService().cookieJar.loadForRequest(
+          Uri.parse(ApiService.baseUrl),
+        );
+        debugPrint(
+          'Cookies sent/available: ${cookies.map((c) => '${c.name}=${c.value}; domain=${c.domain}').toList()}',
+        );
+      } catch (cookieErr) {
+        debugPrint('Error reading cookies: $cookieErr');
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to save attendance: $msg'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        setState(() => _saving = false);
+      }
     } catch (e) {
+      debugPrint('Attendance POST unknown error: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -328,14 +394,14 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
           Container(
             width: 12,
             height: 12,
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-            ),
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
           const SizedBox(width: 8),
           Text('$label: ', style: const TextStyle(fontWeight: FontWeight.w500)),
-          Text('$count', style: TextStyle(fontWeight: FontWeight.w700, color: color)),
+          Text(
+            '$count',
+            style: TextStyle(fontWeight: FontWeight.w700, color: color),
+          ),
         ],
       ),
     );
@@ -347,7 +413,9 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Unsaved Changes'),
-        content: const Text('You have unsaved attendance changes. Leave without saving?'),
+        content: const Text(
+          'You have unsaved attendance changes. Leave without saving?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -364,8 +432,29 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
   }
 
   String _formatNow() {
-    final day = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][_now.weekday % 7];
-    final month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][_now.month - 1];
+    final day = [
+      'Sunday',
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+    ][_now.weekday % 7];
+    final month = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ][_now.month - 1];
     final hour = _now.hour % 12 == 0 ? 12 : _now.hour % 12;
     final ampm = _now.hour >= 12 ? 'PM' : 'AM';
     final hh = hour.toString().padLeft(2, '0');
@@ -392,15 +481,14 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
           foregroundColor: Colors.black,
           actions: [
             IconButton(
-              onPressed: () => Navigator.of(context).pushReplacementNamed('/ad/dashboard'),
+              onPressed: () =>
+                  Navigator.of(context).pushReplacementNamed('/ad/dashboard'),
               icon: const Icon(Icons.home),
               tooltip: 'Dashboard',
             ),
           ],
         ),
-        body: _loading
-            ? _buildLoadingState()
-            : _buildContent(summary),
+        body: _loading ? _buildLoadingState() : _buildContent(summary),
       ),
     );
   }
@@ -424,30 +512,26 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
                 ),
               ],
             ),
-        child: Stack(
-  alignment: Alignment.center,
-  children: [
-              // ✅ Your logo with opacity (no tint)
-              Opacity(
-                opacity: 0.4, // adjust 0.0 - 1.0 for desired transparency
-                child: Image.asset(
-                  'assets/logo.png',
-                  width: 50,
-                  height: 50,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                // ✅ Your logo with opacity (no tint)
+                Opacity(
+                  opacity: 0.4, // adjust 0.0 - 1.0 for desired transparency
+                  child: Image.asset('assets/logo.png', width: 50, height: 50),
                 ),
-              ),
-    const SizedBox(
-      width: 42,
-      height: 42,
-      child: CircularProgressIndicator(
-        strokeWidth: 3,
-        valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF2563EB)),
-      ),
-    ),
-  ],
-),
-
-
+                const SizedBox(
+                  width: 42,
+                  height: 42,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      Color(0xFF2563EB),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 24),
           Text(
@@ -461,10 +545,7 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
           const SizedBox(height: 8),
           Text(
             'Please wait...',
-            style: TextStyle(
-              fontSize: 14,
-              color: Colors.grey[500],
-            ),
+            style: TextStyle(fontSize: 14, color: Colors.grey[500]),
           ),
         ],
       ),
@@ -475,91 +556,146 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
     return Column(
       children: [
         // Header Card
+        // Container(
+        //   width: double.infinity,
+        //   padding: const EdgeInsets.all(20),
+        //   decoration: BoxDecoration(
+        //     gradient: LinearGradient(
+        //       begin: Alignment.topLeft,
+        //       end: Alignment.bottomRight,
+        //       colors: [Colors.blue.shade50, Colors.indigo.shade50],
+        //     ),
+        //     border: Border.all(color: Colors.blue.shade100),
+        //   ),
+        //   // child: Column(
+        //   //   crossAxisAlignment: CrossAxisAlignment.start,
+        //   //   children: [
+        //   //     Row(
+        //   //       children: [
+        //   //         Container(
+        //   //           padding: const EdgeInsets.all(10),
+        //   //           decoration: BoxDecoration(
+        //   //             color: Colors.blue.shade100,
+        //   //             shape: BoxShape.circle,
+        //   //           ),
+        //   //           child: const Icon(
+        //   //             Icons.calendar_today,
+        //   //             color: Colors.blue,
+        //   //             size: 22,
+        //   //           ),
+        //   //         ),
+        //   //         const SizedBox(width: 12),
+        //   //         const Expanded(
+        //   //           child: Text(
+        //   //             'Today\'s Attendance',
+        //   //             style: TextStyle(
+        //   //               fontSize: 20,
+        //   //               fontWeight: FontWeight.w700,
+        //   //               color: Colors.black87,
+        //   //             ),
+        //   //           ),
+        //   //         ),
+        //   //         Container(
+        //   //           padding: const EdgeInsets.symmetric(
+        //   //             horizontal: 12,
+        //   //             vertical: 6,
+        //   //           ),
+        //   //           decoration: BoxDecoration(
+        //   //             color: Colors.blue.shade50,
+        //   //             borderRadius: BorderRadius.circular(8),
+        //   //             border: Border.all(color: Colors.blue.shade100),
+        //   //           ),
+        //   //           child: Text(
+        //   //             'Live',
+        //   //             style: TextStyle(
+        //   //               fontSize: 12,
+        //   //               color: Colors.blue.shade700,
+        //   //               fontWeight: FontWeight.w600,
+        //   //             ),
+        //   //           ),
+        //   //         ),
+        //   //       ],
+        //   //     ),
+        //   //     const SizedBox(height: 12),
+        //   //     Text(
+        //   //       _formatNow(),
+        //   //       style: TextStyle(
+        //   //         fontSize: 14,
+        //   //         color: Colors.grey[700],
+        //   //         fontWeight: FontWeight.w500,
+        //   //       ),
+        //   //     ),
+        //   //   ],
+        //   // ),
+        // ),
+
+        // Summary Bar
+        // Responsive Summary Bar (use this in place of the old Container)
         Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Colors.blue.shade50,
-                Colors.indigo.shade50,
-              ],
-            ),
-            border: Border.all(color: Colors.blue.shade100),
+            color: Colors.white,
+            border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.shade100,
-                      shape: BoxShape.circle,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // If narrow, wrap to multiple lines
+              if (constraints.maxWidth < 380) {
+                return Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    _buildSummaryChip(
+                      'Present',
+                      summary['present']!,
+                      Colors.green,
                     ),
-                    child: const Icon(Icons.calendar_today, color: Colors.blue, size: 22),
-                  ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text(
-                      'Today\'s Attendance',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.black87,
+                    _buildSummaryChip('Absent', summary['absent']!, Colors.red),
+                    _buildSummaryChip(
+                      'Leave',
+                      summary['leave']!,
+                      Colors.orange,
+                    ),
+                  ],
+                );
+              }
+
+              // Otherwise, distribute evenly using Expanded so they don't overflow
+              return Row(
+                children: [
+                  Expanded(
+                    child: Center(
+                      child: _buildSummaryChip(
+                        'Present',
+                        summary['present']!,
+                        Colors.green,
                       ),
                     ),
                   ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.shade50,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.blue.shade100),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Center(
+                      child: _buildSummaryChip(
+                        'Absent',
+                        summary['absent']!,
+                        Colors.red,
+                      ),
                     ),
-                    child: Text(
-                      'Live',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.blue.shade700,
-                        fontWeight: FontWeight.w600,
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Center(
+                      child: _buildSummaryChip(
+                        'Leave',
+                        summary['leave']!,
+                        Colors.orange,
                       ),
                     ),
                   ),
                 ],
-              ),
-              const SizedBox(height: 12),
-              Text(
-                _formatNow(),
-                style: TextStyle(
-                  fontSize: 14,
-                  color: Colors.grey[700],
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        // Summary Bar
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            border: Border(
-              bottom: BorderSide(color: Colors.grey.shade200),
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _buildSummaryChip('Present', summary['present']!, Colors.green),
-              _buildSummaryChip('Absent', summary['absent']!, Colors.red),
-              _buildSummaryChip('Leave', summary['leave']!, Colors.orange),
-            ],
+              );
+            },
           ),
         ),
 
@@ -573,7 +709,9 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
             ),
             child: ListView.builder(
               controller: _scrollController,
-              physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+              physics: const BouncingScrollPhysics(
+                parent: AlwaysScrollableScrollPhysics(),
+              ),
               padding: const EdgeInsets.all(16),
               itemCount: _sortedRoomKeys().length,
               itemBuilder: (context, index) {
@@ -589,9 +727,7 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             color: Colors.white,
-            border: Border(
-              top: BorderSide(color: Colors.grey.shade200),
-            ),
+            border: Border(top: BorderSide(color: Colors.grey.shade200)),
           ),
           child: Row(
             children: [
@@ -619,7 +755,10 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
                       : const Icon(Icons.save, size: 20),
                   label: _saving
                       ? const Text('Saving...', style: TextStyle(fontSize: 16))
-                      : const Text('Save Attendance', style: TextStyle(fontSize: 16)),
+                      : const Text(
+                          'Save Attendance',
+                          style: TextStyle(fontSize: 16),
+                        ),
                 ),
               ),
             ],
@@ -643,10 +782,7 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
           Container(
             width: 8,
             height: 8,
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-            ),
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
           const SizedBox(width: 8),
           Text(
@@ -712,20 +848,30 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
                     color: Colors.blue.shade100,
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.meeting_room, color: Colors.blue, size: 16),
+                  child: const Icon(
+                    Icons.meeting_room,
+                    color: Colors.blue,
+                    size: 16,
+                  ),
                 ),
                 const SizedBox(width: 12),
-                Text(
-                  'Block $block • Room $roomNo',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black87,
+                Flexible(
+                  child: Text(
+                    'Block $block • Room $roomNo',
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black87,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.blue.shade100,
                     borderRadius: BorderRadius.circular(10),
@@ -747,7 +893,9 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
           Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
-              children: students.map((student) => _buildStudentRow(student)).toList(),
+              children: students
+                  .map((student) => _buildStudentRowResponsive(student))
+                  .toList(),
             ),
           ),
         ],
@@ -755,109 +903,259 @@ bool _mapDeepEquals(Map<String, List<Student>> a, Map<String, List<Student>> b) 
     );
   }
 
-  Widget _buildStudentRow(Student student) {
+  // Responsive student row that adapts based on available width
+  Widget _buildStudentRowResponsive(Student student) {
     final accKey = student.accNo.toString();
     final status = student.leave ? 'leave' : (_statusMap[accKey] ?? 'present');
-    
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: student.leave ? Colors.grey.shade50 : Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: student.leave ? Colors.grey.shade300 : Colors.grey.shade200,
-        ),
-      ),
-      child: Row(
-        children: [
-          // Student Info
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  student.name,
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: student.leave ? Colors.grey.shade600 : Colors.black87,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'D.No: ${student.dNo} • Acc: ${student.accNo}',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: student.leave ? Colors.grey.shade500 : Colors.grey.shade700,
-                  ),
-                ),
-              ],
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Use both screen width and parent constraints to decide layout
+        final screenWidth = MediaQuery.of(context).size.width;
+        final maxRowWidth = constraints.maxWidth;
+        // breakpoint: if effective width < 420 -> stack vertically (compact)
+        final effectiveWidth = math.min(screenWidth, maxRowWidth);
+        final isCompact = effectiveWidth < 420;
+
+        final basePadding = isCompact ? 12.0 : 16.0;
+
+        return Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: EdgeInsets.all(basePadding),
+          decoration: BoxDecoration(
+            color: student.leave ? Colors.grey.shade50 : Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: student.leave
+                  ? Colors.grey.shade300
+                  : Colors.grey.shade200,
             ),
           ),
+          child: isCompact
+              ? _buildStudentColumnLayout(student, status, accKey)
+              : _buildStudentRowLayout(student, status, accKey, maxRowWidth),
+        );
+      },
+    );
+  }
 
-          // Status Controls
-          if (student.leave)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.orange.shade50,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.orange.shade200),
+  // Inline (row) layout for wider screens
+  Widget _buildStudentRowLayout(
+    Student student,
+    String status,
+    String accKey,
+    double maxRowWidth,
+  ) {
+    // reserve a reasonable max width for status area so it doesn't push text out
+    final maxStatusAreaWidth = math.min(240.0, maxRowWidth * 0.36);
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        // Student Info
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                student.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: student.leave ? Colors.grey.shade600 : Colors.black87,
+                ),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.beach_access, color: Colors.orange.shade600, size: 14),
-                  const SizedBox(width: 6),
-                  Text(
-                    'On Leave',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.orange.shade700,
-                      fontWeight: FontWeight.w600,
+              const SizedBox(height: 4),
+              Text(
+                'D.No: ${student.dNo} • Acc: ${student.accNo}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: student.leave
+                      ? Colors.grey.shade500
+                      : Colors.grey.shade700,
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(width: 12),
+
+        // Status area
+        ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: maxStatusAreaWidth),
+          child: student.leave
+              ? _leaveBadge()
+              : Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  alignment: WrapAlignment.end,
+                  children: [
+                    _buildStatusButtonResponsive(
+                      'P',
+                      'Present',
+                      status == 'present',
+                      () => _setStatus(accKey, 'present'),
+                      maxStatusAreaWidth,
                     ),
-                  ),
-                ],
+                    _buildStatusButtonResponsive(
+                      'A',
+                      'Absent',
+                      status == 'absent',
+                      () => _setStatus(accKey, 'absent'),
+                      maxStatusAreaWidth,
+                    ),
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+
+  // Column layout for narrow screens: student info on top, buttons below
+  Widget _buildStudentColumnLayout(
+    Student student,
+    String status,
+    String accKey,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // info
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              student.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: student.leave ? Colors.grey.shade600 : Colors.black87,
               ),
-            )
-          else
-            Row(
-              children: [
-                _buildStatusButton('P', 'Present', status == 'present', () => _setStatus(accKey, 'present')),
-                const SizedBox(width: 8),
-                _buildStatusButton('A', 'Absent', status == 'absent', () => _setStatus(accKey, 'absent')),
-              ],
             ),
+            const SizedBox(height: 4),
+            Text(
+              'D.No: ${student.dNo} • Acc: ${student.accNo}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                color: student.leave
+                    ? Colors.grey.shade500
+                    : Colors.grey.shade700,
+              ),
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 10),
+
+        // controls
+        Align(
+          alignment: Alignment.centerLeft,
+          child: student.leave
+              ? _leaveBadge()
+              : Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    _buildStatusButtonResponsive(
+                      'P',
+                      'Present',
+                      status == 'present',
+                      () => _setStatus(accKey, 'present'),
+                      200,
+                    ),
+                    _buildStatusButtonResponsive(
+                      'A',
+                      'Absent',
+                      status == 'absent',
+                      () => _setStatus(accKey, 'absent'),
+                      200,
+                    ),
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _leaveBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.orange.shade200),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.beach_access, color: Colors.orange.shade600, size: 14),
+          const SizedBox(width: 6),
+          Text(
+            'On Leave',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.orange.shade700,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildStatusButton(String label, String tooltip, bool active, VoidCallback onTap) {
+  // A responsive status button: width computed from available space
+  Widget _buildStatusButtonResponsive(
+    String label,
+    String tooltip,
+    bool active,
+    VoidCallback onTap,
+    double parentMaxWidth,
+  ) {
+    final minW = 44.0;
+    final maxW = 88.0;
+    // compute size based on parent; ensures buttons don't overflow on small screens
+    final computed = math.max(minW, math.min(maxW, parentMaxWidth / 2.4));
+
     return Tooltip(
       message: tooltip,
       child: GestureDetector(
         onTap: onTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          width: 44,
+          duration: const Duration(milliseconds: 180),
+          width: computed,
           height: 36,
           alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: 6),
           decoration: BoxDecoration(
-            color: active ? (label == 'P' ? Colors.green : Colors.red) : Colors.white,
+            color: active
+                ? (label == 'P' ? Colors.green : Colors.red)
+                : Colors.white,
             border: Border.all(
-              color: active ? (label == 'P' ? Colors.green : Colors.red) : Colors.grey.shade400,
+              color: active
+                  ? (label == 'P' ? Colors.green : Colors.red)
+                  : Colors.grey.shade400,
               width: active ? 0 : 1,
             ),
             borderRadius: BorderRadius.circular(8),
-            boxShadow: active ? [
-              BoxShadow(
-                color: (label == 'P' ? Colors.green : Colors.red).withOpacity(0.3),
-                blurRadius: 4,
-                offset: const Offset(0, 2),
-              ),
-            ] : null,
+            boxShadow: active
+                ? [
+                    BoxShadow(
+                      color: (label == 'P' ? Colors.green : Colors.red)
+                          .withOpacity(0.22),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
           ),
           child: Text(
             label,
