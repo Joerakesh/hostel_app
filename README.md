@@ -1,5 +1,9 @@
 # hostel_app
 
+## to build the app
+
+flutter build apk --release
+
 A new Flutter project.
 
 ## Getting Started
