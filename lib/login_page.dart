@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'api_service.dart';
-import 'services/cache_service.dart'; 
+import 'services/cache_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -18,9 +18,7 @@ class _LoginPageState extends State<LoginPage> {
   final _formKey = GlobalKey<FormState>();
 
   Future<void> _handleLogin() async {
-
     if (!_formKey.currentState!.validate()) return;
-
 
     setState(() {
       _loading = true;
@@ -28,28 +26,60 @@ class _LoginPageState extends State<LoginPage> {
     });
 
     try {
-      final data = await ApiService().login(_username.text.trim(), _password.text);
+      final data = await ApiService().login(
+        _username.text.trim(),
+        _password.text,
+      );
       final role = data['user']?['role'] ?? data['role'];
-final username = data['user']?['username'] ?? data['username'];
+      final username = data['user']?['username'] ?? data['username'];
 
-if (role != null) {
-  await CacheService.saveAuthCache(role: role.toString(), username: username?.toString());
-}
+      if (role != null) {
+        await CacheService.saveAuthCache(
+          role: role.toString(),
+          username: username?.toString(),
+        );
+      }
 
       if (role == 'ad') {
         // after successful login, preload attendance cache
-try {
-  // call your endpoint that returns grouped students (same used in AttendancePage)
-  final resp = await ApiService().dio.get('/api/attendance'); // adjust endpoint if different
-  final data = resp.data;
-  if (data != null && data['students'] != null) {
-    // Save raw grouped students map (ensure it's Map<String, dynamic>)
-    await CacheService.saveAttendanceCache(Map<String, dynamic>.from(data['students']));
-  }
-} catch (e) {
-  // don't block login if caching fails — optionally log or show non-blocking msg
-  // print('Preload cache failed: $e');
-}
+        // after successful login, preload attendance cache (grouped students)
+        try {
+          // 1) Fetch grouped students (used on Attendance page)
+          final respStudents = await ApiService().dio.get(
+            '/api/attendance',
+          ); // adjust if your route differs
+          final studentsData = respStudents.data;
+          if (studentsData != null && studentsData['students'] != null) {
+            await CacheService.saveAttendanceCache(
+              Map<String, dynamic>.from(studentsData['students']),
+            );
+          }
+        } catch (e) {
+          // don't block login if caching fails — optionally log
+          // print('Preload grouped students cache failed: $e');
+        }
+
+        // 2) Fetch last 5 days attendance records
+        try {
+          // adjust endpoint if your server exposes a different path
+          final respRecords = await ApiService().dio.get(
+            '/api/attendance/get-attendance-records',
+          );
+          final recordsData = respRecords.data;
+          // Note: your server returns { "attendance-records": [...] } according to the backend
+          if (recordsData != null &&
+              recordsData['attendance-records'] != null) {
+            await CacheService.saveAttendanceRecordsCache(
+              recordsData['attendance-records'],
+            );
+          } else {
+            // save whatever the endpoint returned (defensive)
+            await CacheService.saveAttendanceRecordsCache(recordsData);
+          }
+        } catch (e) {
+          // don't block login if caching fails
+          // print('Preload attendance records failed: $e');
+        }
 
         if (!mounted) return;
         Navigator.of(context).pushReplacementNamed('/ad/dashboard');
@@ -125,7 +155,10 @@ try {
                     ),
                     const SizedBox(height: 8),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 4,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.blue.shade50,
                         borderRadius: BorderRadius.circular(8),
@@ -170,13 +203,18 @@ try {
                             labelText: 'Username',
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(color: Colors.grey.shade300),
+                              borderSide: BorderSide(
+                                color: Colors.grey.shade300,
+                              ),
                             ),
                             focusedBorder: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(12),
                               borderSide: const BorderSide(color: Colors.blue),
                             ),
-                            prefixIcon: Icon(Icons.person, color: Colors.grey.shade600),
+                            prefixIcon: Icon(
+                              Icons.person,
+                              color: Colors.grey.shade600,
+                            ),
                           ),
                           validator: (value) {
                             if (value == null || value.isEmpty) {
@@ -196,19 +234,28 @@ try {
                             labelText: 'Password',
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(color: Colors.grey.shade300),
+                              borderSide: BorderSide(
+                                color: Colors.grey.shade300,
+                              ),
                             ),
                             focusedBorder: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(12),
                               borderSide: const BorderSide(color: Colors.blue),
                             ),
-                            prefixIcon: Icon(Icons.lock, color: Colors.grey.shade600),
+                            prefixIcon: Icon(
+                              Icons.lock,
+                              color: Colors.grey.shade600,
+                            ),
                             suffixIcon: IconButton(
                               icon: Icon(
-                                _showPassword ? Icons.visibility : Icons.visibility_off,
+                                _showPassword
+                                    ? Icons.visibility
+                                    : Icons.visibility_off,
                                 color: Colors.grey.shade600,
                               ),
-                              onPressed: () => setState(() => _showPassword = !_showPassword),
+                              onPressed: () => setState(
+                                () => _showPassword = !_showPassword,
+                              ),
                             ),
                           ),
                           validator: (value) {
@@ -233,7 +280,11 @@ try {
                             ),
                             child: Row(
                               children: [
-                                Icon(Icons.error_outline, color: Colors.red.shade600, size: 16),
+                                Icon(
+                                  Icons.error_outline,
+                                  color: Colors.red.shade600,
+                                  size: 16,
+                                ),
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Text(
