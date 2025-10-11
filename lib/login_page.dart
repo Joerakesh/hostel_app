@@ -1,6 +1,11 @@
+// lib/login_page.dart
 import 'package:flutter/material.dart';
 import 'api_service.dart';
-import 'services/cache_service.dart';
+import 'cache_service.dart';
+import 'notification_service.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'role_shell.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -17,6 +22,20 @@ class _LoginPageState extends State<LoginPage> {
   String? _error;
   final _formKey = GlobalKey<FormState>();
 
+  // Local normalizer — returns 'student' | 'ad' | 'director'
+  String _normalizeRole(String raw) {
+    final r = raw.trim().toLowerCase();
+    if (r == 'ad' ||
+        r == 'assistant' ||
+        r.contains('assistant') ||
+        r == 'assistant_director' ||
+        r == 'assistant director' ||
+        r.contains('ad'))
+      return 'ad';
+    if (r == 'director' || r.contains('director')) return 'director';
+    return 'student';
+  }
+
   Future<void> _handleLogin() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -26,28 +45,83 @@ class _LoginPageState extends State<LoginPage> {
     });
 
     try {
-      final data = await ApiService().login(
+      // Request notification permission (best-effort)
+      final settings = await NotificationService.requestPermission();
+      final allowed =
+          settings.authorizationStatus == AuthorizationStatus.authorized ||
+          settings.authorizationStatus == AuthorizationStatus.provisional;
+
+      // Perform login POST
+      final loginResp = await ApiService().login(
         _username.text.trim(),
         _password.text,
       );
-      final role = data['user']?['role'] ?? data['role'];
-      final username = data['user']?['username'] ?? data['username'];
 
-      if (role != null) {
-        await CacheService.saveAuthCache(
-          role: role.toString(),
-          username: username?.toString(),
-        );
+      // After login: ask server for authoritative auth state (uses cookies / token)
+      Map<String, dynamic> authInfo = {};
+      try {
+        authInfo = await ApiService().authenticate(forceVerify: true);
+        debugPrint('authenticate(forceVerify:true) => $authInfo');
+      } catch (aErr) {
+        debugPrint('authenticate() after login failed: $aErr');
       }
 
+      // Derive canonical role & username (prefer authInfo, fallback to login response)
+      String canonicalRole = '';
+      String? canonicalUsername;
+
+      if (authInfo.isNotEmpty) {
+        canonicalRole = (authInfo['role'] ?? '').toString();
+        canonicalUsername =
+            (authInfo['username'] ?? authInfo['user']?['username'])?.toString();
+      }
+
+      // Fallback to login response body (defensive)
+      canonicalRole = canonicalRole.isNotEmpty
+          ? canonicalRole
+          : (loginResp['user']?['role'] ?? loginResp['role'] ?? '').toString();
+      canonicalUsername =
+          (canonicalUsername != null && canonicalUsername.isNotEmpty)
+          ? canonicalUsername
+          : (loginResp['user']?['username'] ?? loginResp['username'])
+                ?.toString();
+
+      final role = canonicalRole.isNotEmpty
+          ? _normalizeRole(canonicalRole)
+          : 'student';
+      final username = canonicalUsername;
+
+      // Persist canonical auth cache (role + username)
+      try {
+        await CacheService.saveAuthCache(
+          role: role,
+          username: username?.toString(),
+        );
+        final sp = await SharedPreferences.getInstance();
+        await sp.setString('role', role);
+        if (username != null && username.isNotEmpty) {
+          await sp.setString('username', username);
+        }
+      } catch (e) {
+        debugPrint('Warning: failed to persist canonical auth info: $e');
+      }
+
+      // Debug: list cookies (helpful when server uses cookie-based session)
+      try {
+        final cookies = await ApiService().cookieJar.loadForRequest(
+          Uri.parse(ApiService.baseUrl),
+        );
+        debugPrint(
+          'Cookies after login: ${cookies.map((c) => '${c.name}=${c.value}').toList()}',
+        );
+      } catch (cookieErr) {
+        debugPrint('Failed to list cookies after login: $cookieErr');
+      }
+
+      // If AD: preload AD-specific caches (best-effort)
       if (role == 'ad') {
-        // after successful login, preload attendance cache
-        // after successful login, preload attendance cache (grouped students)
         try {
-          // 1) Fetch grouped students (used on Attendance page)
-          final respStudents = await ApiService().dio.get(
-            '/api/attendance',
-          ); // adjust if your route differs
+          final respStudents = await ApiService().dio.get('/api/attendance');
           final studentsData = respStudents.data;
           if (studentsData != null && studentsData['students'] != null) {
             await CacheService.saveAttendanceCache(
@@ -55,50 +129,42 @@ class _LoginPageState extends State<LoginPage> {
             );
           }
         } catch (e) {
-          // don't block login if caching fails — optionally log
-          // print('Preload grouped students cache failed: $e');
+          debugPrint('Preload grouped students cache failed: $e');
         }
 
-        // 2) Fetch last 5 days attendance records
         try {
-          // adjust endpoint if your server exposes a different path
           final respRecords = await ApiService().dio.get(
             '/api/attendance/get-attendance-records',
           );
           final recordsData = respRecords.data;
-          // Note: your server returns { "attendance-records": [...] } according to the backend
           if (recordsData != null &&
               recordsData['attendance-records'] != null) {
             await CacheService.saveAttendanceRecordsCache(
               recordsData['attendance-records'],
             );
           } else {
-            // save whatever the endpoint returned (defensive)
             await CacheService.saveAttendanceRecordsCache(recordsData);
           }
         } catch (e) {
-          // don't block login if caching fails
-          // print('Preload attendance records failed: $e');
+          debugPrint('Preload attendance records failed: $e');
         }
-
-        if (!mounted) return;
-        Navigator.of(context).pushReplacementNamed('/ad/dashboard');
-      } else if (role == 'director') {
-        setState(() {
-          _error = "Invalid role: $role. Please use AD credentials.";
-        });
-      } else if (role == 'student') {
-        setState(() {
-          _error = "Invalid role: $role. Please use AD credentials.";
-        });
-      } else {
-        setState(() {
-          _error = "Unknown role: $role";
-        });
       }
-    } catch (e) {
+
+      // Navigate into RoleShell for all recognized roles
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => RoleShell(role: role)),
+      );
+      return;
+    } on Exception catch (e) {
+      // Dio exceptions are wrapped as Exception in ApiService; show friendly message
       setState(() {
         _error = e.toString().replaceAll('Exception: ', '');
+      });
+    } catch (e) {
+      // Unexpected errors
+      setState(() {
+        _error = e.toString();
       });
     } finally {
       if (mounted) {
@@ -164,7 +230,7 @@ class _LoginPageState extends State<LoginPage> {
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
-                        'AD Portal',
+                        'Portal',
                         style: TextStyle(
                           fontSize: 12,
                           color: Colors.blue.shade700,
@@ -217,9 +283,8 @@ class _LoginPageState extends State<LoginPage> {
                             ),
                           ),
                           validator: (value) {
-                            if (value == null || value.isEmpty) {
+                            if (value == null || value.isEmpty)
                               return 'Please enter username';
-                            }
                             return null;
                           },
                         ),
@@ -259,9 +324,8 @@ class _LoginPageState extends State<LoginPage> {
                             ),
                           ),
                           validator: (value) {
-                            if (value == null || value.isEmpty) {
+                            if (value == null || value.isEmpty)
                               return 'Please enter password';
-                            }
                             return null;
                           },
                         ),
@@ -344,7 +408,7 @@ class _LoginPageState extends State<LoginPage> {
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 32),
                   child: Text(
-                    'Use your authorized Assistant Director credentials to access the portal',
+                    'Use your assigned credentials to access your dashboard',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 12,
