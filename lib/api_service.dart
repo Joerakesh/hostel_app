@@ -5,7 +5,7 @@ import 'package:cookie_jar/cookie_jar.dart';
 import 'package:dio_cookie_manager/dio_cookie_manager.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter/material.dart';
-import 'services/cache_service.dart';
+import 'cache_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiService {
@@ -199,6 +199,90 @@ class ApiService {
         'error': e.message ?? e.toString(),
       };
     }
+  }
+
+  /// Returns the current user's role as a normalized string: "student", "ad", or "director".
+  /// Strategy:
+  /// 1) Fast path: use authenticate(forceVerify: false) to read cached value (no network).
+  /// 2) If empty, force server verification via authenticate(forceVerify: true).
+  /// 3) If still empty, fallback to SharedPreferences.
+  /// 4) Default to 'student'.
+  Future<String> getCurrentUserRole() async {
+    try {
+      // 1) fast cached check (no network)
+      final fast = await authenticate(forceVerify: false);
+      var role = (fast['role'] ?? '')?.toString();
+      if (role != null && role.isNotEmpty) {
+        final normalized = _normalizeRole(role);
+        // persist normalized role for faster future reads
+        try {
+          await CacheService.saveAuthCache(
+            role: normalized,
+            username: fast['username']?.toString(),
+          );
+          final sp = await SharedPreferences.getInstance();
+          await sp.setString('role', normalized);
+        } catch (e) {
+          debugPrint('Warning: failed to persist role from fast path: $e');
+        }
+        return normalized;
+      }
+
+      // 2) force server verification
+      final server = await authenticate(forceVerify: true);
+      role = (server['role'] ?? '')?.toString();
+      if (role != null && role.isNotEmpty) {
+        final normalized = _normalizeRole(role);
+        try {
+          await CacheService.saveAuthCache(
+            role: normalized,
+            username: server['username']?.toString(),
+          );
+          final sp = await SharedPreferences.getInstance();
+          await sp.setString('role', normalized);
+        } catch (e) {
+          debugPrint(
+            'Warning: failed to persist role from server response: $e',
+          );
+        }
+        return normalized;
+      }
+
+      // 3) SharedPreferences fallback
+      final sp = await SharedPreferences.getInstance();
+      role = sp.getString('role');
+      if (role != null && role.isNotEmpty) {
+        final normalized = _normalizeRole(role);
+        try {
+          await CacheService.saveAuthCache(
+            role: normalized,
+            username: sp.getString('username'),
+          );
+        } catch (e) {
+          debugPrint(
+            'Warning: failed to persist role from SharedPreferences: $e',
+          );
+        }
+        return normalized;
+      }
+    } catch (e) {
+      debugPrint('getCurrentUserRole error: $e');
+    }
+
+    // default fallback
+    return 'student';
+  }
+
+  /// Normalize role labels into the small set used by the app: 'student', 'ad', 'director'.
+  String _normalizeRole(String raw) {
+    final r = raw.trim().toLowerCase();
+    if (r == 'ad' ||
+        r == 'assistant' ||
+        r.contains('assistant') ||
+        r.contains('ad'))
+      return 'ad';
+    if (r == 'director' || r.contains('director')) return 'director';
+    return 'student';
   }
 
   /// Logout: call backend (best-effort) and clear cookies
