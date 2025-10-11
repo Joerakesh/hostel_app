@@ -1,15 +1,12 @@
-// lib/role_shell.dart
 import 'package:flutter/material.dart';
 import 'api_service.dart';
 import 'attendance_page.dart'; // real AttendancePage
 
-// Replace these imports with your actual dashboard files.
-// Each file must expose a widget with the exact class name used below.
-import 'student_dashboard.dart'; // should export class StudentDashboard
-import 'ad_dashboard.dart'; // should export class AdDashboard
-import 'director_dashboard.dart'; // should export class DirectorDashboard
+// Actual dashboards (make sure these files exist)
+import 'student_dashboard.dart';
+import 'ad_dashboard.dart';
+import 'director_dashboard.dart';
 
-import 'shared_header.dart';
 import 'shared_footer.dart';
 import 'quick_card.dart';
 import 'profile_page.dart';
@@ -48,20 +45,6 @@ class _RoleShellState extends State<RoleShell> {
     }
   }
 
-  String _titleForIndex(int index) {
-    if (isStudent) {
-      const titles = ['Home', 'Utilities', 'Profile'];
-      return titles[index.clamp(0, titles.length - 1)];
-    }
-    if (isAd) {
-      const titles = ['Home', 'Students', 'Analytics', 'Profile'];
-      return titles[index.clamp(0, titles.length - 1)];
-    }
-    // director
-    const titles = ['Dashboard', 'Notices', 'Leaves', 'Analytics'];
-    return titles[index.clamp(0, titles.length - 1)];
-  }
-
   Widget _wrapWithNavigator(int idx, Widget child) {
     final key = _navigatorKeys[idx]!;
     return Navigator(
@@ -73,31 +56,23 @@ class _RoleShellState extends State<RoleShell> {
   List<Widget> _buildTabs() {
     if (isStudent) {
       return [
-        // Use real StudentDashboard file
         _wrapWithNavigator(0, const StudentDashboard()),
         _wrapWithNavigator(1, const StudentUtilitiesPage()),
-        // instead of StudentProfilePage()
-        _wrapWithNavigator(2, ProfilePage(role: 'student')),
+        _wrapWithNavigator(2, const ProfilePage(role: 'student')),
       ];
     } else if (isAd) {
       return [
-        // Use real AdDashboard file
         _wrapWithNavigator(0, const AdDashboard()),
         _wrapWithNavigator(1, const AdStudentsPage()),
         _wrapWithNavigator(2, const AdAnalyticsPage()),
-
-        // instead of AdProfilePage()
-        _wrapWithNavigator(3, ProfilePage(role: 'ad')),
+        _wrapWithNavigator(3, const ProfilePage(role: 'ad')),
       ];
     } else {
       return [
-        // Use real DirectorDashboard file
         _wrapWithNavigator(0, const DirectorDashboard()),
         _wrapWithNavigator(1, const DirectorNoticesPage()),
         _wrapWithNavigator(2, const DirectorLeaveRequestsPage()),
-
-        // director:
-        _wrapWithNavigator(3, ProfilePage(role: 'director')),
+        _wrapWithNavigator(3, const ProfilePage(role: 'director')),
       ];
     }
   }
@@ -114,39 +89,17 @@ class _RoleShellState extends State<RoleShell> {
     final tabs = _buildTabs();
 
     return Scaffold(
-      appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(64),
-        child: SafeArea(
-          top: true,
-          child: SharedHeader(
-            // Title derived from current index and role
-            title: _titleForIndex(_currentIndex),
-            // subtitle shows role and optional username (if you want)
-            subtitle: widget.role.toUpperCase(),
-            // example trailing action: ADs can quickly take attendance on home
-            trailing: isAd && _currentIndex == 0
-                ? TextButton.icon(
-                    onPressed: _pushAttendance,
-                    icon: const Icon(
-                      Icons.check,
-                      size: 18,
-                      color: Colors.white,
-                    ),
-                    label: const Text(
-                      'Take',
-                      style: TextStyle(color: Colors.white),
-                    ),
-                  )
-                : null,
-          ),
-        ),
-      ),
+      // ❌ No AppBar or header here
       body: IndexedStack(index: _currentIndex, children: tabs),
+
+      // ✅ Bottom navigation bar
       bottomNavigationBar: SharedFooter(
         role: widget.role,
         currentIndex: _currentIndex,
         onTap: _onTapBottom,
       ),
+
+      // ✅ ADs keep their floating button for Attendance
       floatingActionButton: isAd
           ? FloatingActionButton(
               onPressed: _pushAttendance,
@@ -158,8 +111,9 @@ class _RoleShellState extends State<RoleShell> {
   }
 }
 
-/// ---------------- Minimal placeholders for pages that remain in this file
-/// Keep these small; dashboard contents are imported from separate files (above)
+//
+// ----------------- Placeholder pages -----------------
+//
 
 class StudentUtilitiesPage extends StatelessWidget {
   const StudentUtilitiesPage({super.key});
@@ -179,13 +133,6 @@ class StudentUtilitiesPage extends StatelessWidget {
   }
 }
 
-class StudentProfilePage extends StatelessWidget {
-  const StudentProfilePage({super.key});
-  @override
-  Widget build(BuildContext context) =>
-      const Center(child: Text('Student Profile'));
-}
-
 class AdStudentsPage extends StatelessWidget {
   const AdStudentsPage({super.key});
   @override
@@ -198,12 +145,6 @@ class AdAnalyticsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) =>
       const Center(child: Text('AD Analytics'));
-}
-
-class AdProfilePage extends StatelessWidget {
-  const AdProfilePage({super.key});
-  @override
-  Widget build(BuildContext context) => const Center(child: Text('AD Profile'));
 }
 
 class DirectorNoticesPage extends StatelessWidget {
