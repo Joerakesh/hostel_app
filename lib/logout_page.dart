@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'api_service.dart';
-import 'services/cache_service.dart';
+import 'cache_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 
 class LogoutPage extends StatefulWidget {

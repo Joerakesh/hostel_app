@@ -1,7 +1,7 @@
 // lib/attendance_records_page.dart
 import 'package:flutter/material.dart';
 import 'api_service.dart';
-import 'services/cache_service.dart';
+import 'cache_service.dart';
 
 class RecordEntry {
   final String id;
