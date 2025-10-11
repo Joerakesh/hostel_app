@@ -11,6 +11,10 @@ import 'ad_dashboard.dart';
 import 'logout_page.dart';
 import 'attendance_page.dart';
 import 'attendance_records_page.dart';
+import 'student_dashboard.dart'; // should export class StudentDashboard
+import 'director_dashboard.dart';
+// RoleShell - make sure this file exists: lib/shell/role_shell.dart
+import 'role_shell.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
@@ -36,24 +40,34 @@ Future<void> main() async {
   // initialize Firebase
   await Firebase.initializeApp();
 
+  // print token for debug
+  FirebaseMessaging.instance.getToken().then((t) {
+    debugPrint('*** DEBUG: device FCM token => $t');
+  });
+
   // init ApiService (Dio + cookie jar + token restore)
   await ApiService().init();
 
-  // Register background handler
-  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-
-  // initialize local notifications and FCM background handler (your NotificationService)
+  // initialize local notifications and register bg handler from your service
   await NotificationService.init();
 
-  // Single global listener for notification taps (works for background -> foreground)
+  // You may register background handler here OR inside NotificationService.init(), but not both.
+  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+
+  // Add global listeners (safe to add here)
+  FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+    debugPrint(
+      '*** onMessage: ${message.messageId}, notification=${message.notification}, data=${message.data}',
+    );
+  });
+
   FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-    try {
-      final route = message.data['route'] ?? message.data['screen'];
-      if (route != null && route is String && route.isNotEmpty) {
-        _safeNavigate(route);
-      }
-    } catch (e) {
-      debugPrint('onMessageOpenedApp handler error: $e');
+    debugPrint(
+      '*** onMessageOpenedApp: ${message.messageId}, data=${message.data}',
+    );
+    final route = message.data['route'] ?? message.data['screen'];
+    if (route is String && route.isNotEmpty) {
+      _safeNavigate(route);
     }
   });
 
@@ -70,14 +84,16 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        // use new text theme names if needed; keep defaults otherwise
       ),
       initialRoute: '/',
       routes: {
         '/': (context) => const LoadingPage(),
         '/login': (context) => const LoginPage(),
-        '/ad/dashboard': (context) => const AdDashboard(),
         '/logout': (context) => const LogoutPage(),
-        // Support both route strings (so node script and app both work)
+        '/ad/dashboard': (context) => const AdDashboard(),
+        '/student/dashboard': (context) => const StudentDashboard(),
+        '/director/dashboard': (context) => const DirectorDashboard(),
         '/ad/take-attendance': (ctx) => const AttendancePage(),
         '/ad/attendance': (ctx) => const AttendancePage(),
         '/ad/attendance-records': (ctx) => const AttendanceRecordsPage(),
@@ -86,8 +102,10 @@ class MyApp extends StatelessWidget {
   }
 }
 
-/// Loading page: requests notification permission first, then navigates to Login.
-/// This enforces the flow: user must allow notifications, then we go to login.
+/// Loading page: requests notification permission first, then routes.
+/// After permission is granted:
+///  - if user is authenticated -> show role shell (persistent header/footer)
+///  - otherwise -> go to /login
 class LoadingPage extends StatefulWidget {
   const LoadingPage({super.key});
   @override
@@ -146,11 +164,46 @@ class _LoadingPageState extends State<LoadingPage> {
       setState(() {
         _permissionGranted = true;
       });
-      // Navigate to login after a brief visual confirmation
-      Future.delayed(const Duration(milliseconds: 250), () {
+
+      // After a small confirmation show correct next screen:
+      // If user already authenticated, go to RoleShell; otherwise go to login.
+      // Use authenticate(forceVerify:false) to check quickly.
+      Future.delayed(const Duration(milliseconds: 250), () async {
         if (!mounted) return;
-        Navigator.of(context).pushReplacementNamed('/login');
+
+        try {
+          final auth = await ApiService().authenticate(forceVerify: false);
+          final isLoggedIn = auth['isLoggedIn'] == true;
+
+          if (isLoggedIn) {
+            // Resolve role string (normalized)
+            String roleString = 'student';
+            try {
+              roleString = await ApiService().getCurrentUserRole();
+            } catch (e) {
+              debugPrint(
+                'Failed to get role string, defaulting to student: $e',
+              );
+            }
+
+            // Push the RoleShell as replacement root
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(builder: (_) => RoleShell(role: roleString)),
+            );
+            return;
+          } else {
+            // Not logged in -> go to login page
+            Navigator.of(context).pushReplacementNamed('/login');
+            return;
+          }
+        } catch (e) {
+          debugPrint('Error while resolving auth state: $e');
+          // fallback to login if anything goes wrong
+          Navigator.of(context).pushReplacementNamed('/login');
+          return;
+        }
       });
+
       return;
     }
 
