@@ -1,28 +1,25 @@
 // lib/notification_service.dart
 import 'dart:io';
 import 'dart:convert';
+import 'dart:developer' as developer;
+
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
+import 'package:dio/dio.dart' show DioError, DioException, LogInterceptor;
 
-/// Replace with your deployed backend URL (https) and API key.
-/// For security, prefer injecting these from a secure place rather than hardcoding.
-const String BACKEND_BASE_URL = 'http://10.20.108.165:4000';
-const String API_KEY = 'supersecretapikey123';
+import 'api_service.dart'; // <-- your ApiService (Dio + cookie support)
 
-@pragma('vm:entry-point') // required for background handling on release
+@pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  // Ensure Firebase is initialized in background isolate.
   await Firebase.initializeApp();
-  // Optionally handle background message; e.g. write to local DB, analytics, etc.
-  print(
+  debugPrint(
     'Background message received: ${message.messageId}, data: ${message.data}',
   );
 }
 
-/// Singleton-like service to manage notifications
 class NotificationService {
   NotificationService._();
 
@@ -31,15 +28,14 @@ class NotificationService {
 
   static const AndroidNotificationChannel _androidChannel =
       AndroidNotificationChannel(
-        'high_importance_channel', // id
-        'High Importance Notifications', // title
+        'high_importance_channel',
+        'High Importance Notifications',
         description: 'This channel is used for important notifications.',
         importance: Importance.high,
       );
 
-  /// Call this once early (before runApp ideally after Firebase.initializeApp())
+  /// Initialize local notifications and register background handler
   static Future<void> init() async {
-    // Initialize flutter_local_notifications
     const AndroidInitializationSettings androidInit =
         AndroidInitializationSettings('@mipmap/ic_launcher');
 
@@ -54,27 +50,23 @@ class NotificationService {
       iOS: iosInit,
     );
 
-    // onDidReceiveNotificationResponse handles taps (for both Android & iOS)
     await _local.initialize(
       settings,
       onDidReceiveNotificationResponse: (NotificationResponse response) {
-        // This fires when user taps a local/system notification
-        print('Local notification tapped. payload: ${response.payload}');
+        debugPrint('Local notification tapped. payload: ${response.payload}');
       },
     );
 
-    // Create channel for Android
     await _local
         .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin
         >()
         ?.createNotificationChannel(_androidChannel);
 
-    // Register FCM background handler
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
   }
 
-  /// Request permission for notifications (Android 13+, iOS)
+  /// Request permission (returns NotificationSettings from firebase_messaging)
   static Future<NotificationSettings> requestPermission() async {
     final FirebaseMessaging messaging = FirebaseMessaging.instance;
     final settings = await messaging.requestPermission(
@@ -83,18 +75,16 @@ class NotificationService {
       sound: true,
       provisional: false,
     );
-
-    print('User granted permission: ${settings.authorizationStatus}');
+    debugPrint('User granted permission: ${settings.authorizationStatus}');
     return settings;
   }
 
-  /// Listen to incoming messages and show local notification when app is foreground
+  /// Show local notification for foreground messages and set tap handler
   static void setForegroundNotificationHandler(BuildContext context) {
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      print('Foreground message: ${message.messageId}');
+      debugPrint('Foreground message: ${message.messageId}');
       final notification = message.notification;
 
-      // When the push has a notification payload, show a system notification
       if (notification != null) {
         _local.show(
           notification.hashCode,
@@ -115,133 +105,271 @@ class NotificationService {
       }
     });
 
-    // When the user taps a notification and app opens/resumes from background
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-      print(
+      debugPrint(
         'Notification opened app: ${message.messageId}, data: ${message.data}',
       );
-      // Navigate if you like:
-      // Navigator.of(context).pushNamed('/ad/attendance-records');
+      // Optional: navigate using Navigator/GlobalKey if desired
     });
   }
 
-  /// Upload FCM token to your backend.
-  /// - `userId` is optional and useful to map token to your app user.
-  /// - `platform` is optional; defaults to the device OS.
+  /// Upload FCM token to backend using ApiService().dio
+  /// - if your server expects cookie-based auth (verifyToken), using ApiService().dio will forward cookies
   static Future<void> saveFcmTokenToServer({
     String? userId,
     String? platform,
   }) async {
+    developer.log('saveFcmTokenToServer: start', name: 'NotificationService');
     try {
+      // log ApiService baseUrl so we can detect path mismatches
+      final baseUrl = ApiService().dio.options.baseUrl;
+      developer.log(
+        'ApiService baseUrl: $baseUrl',
+        name: 'NotificationService',
+      );
+
+      // get token
       final token = await FirebaseMessaging.instance.getToken();
-      print('FCM token: $token');
+      developer.log('FCM token: $token', name: 'NotificationService');
 
-      if (token == null) return;
+      if (token == null) {
+        developer.log(
+          'No FCM token (null) — aborting upload.',
+          name: 'NotificationService',
+        );
+        return;
+      }
 
-      // send to backend
-      final uri = Uri.parse('$BACKEND_BASE_URL/api/fcm-token');
-      final body = jsonEncode({
+      // normalize path depending on whether baseUrl contains /api
+      final normalizedPath = (baseUrl.contains('/api'))
+          ? '/fcm/register'
+          : '/api/fcm/register';
+
+      final bodyMap = {
         'token': token,
         'userId': userId,
         'platform': platform ?? Platform.operatingSystem,
         'meta': {
-          'app': 'your_app_name',
+          'app': 'sacred-heart-hostel',
           'timestamp': DateTime.now().toIso8601String(),
         },
-      });
+      };
 
-      final response = await http.post(
-        uri,
-        headers: {'Content-Type': 'application/json', 'x-api-key': API_KEY},
-        body: body,
+      developer.log(
+        'Prepared body for register: $bodyMap',
+        name: 'NotificationService',
       );
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        print('Saved token to server: ${response.body}');
+      // add LogInterceptor only once (avoid stacking)
+      try {
+        final hasLogInterceptor = ApiService().dio.interceptors.any(
+          (i) => i.runtimeType == LogInterceptor,
+        );
+        if (!hasLogInterceptor) {
+          ApiService().dio.interceptors.add(
+            LogInterceptor(
+              request: true,
+              requestHeader: true,
+              requestBody: true,
+              responseHeader: true,
+              responseBody: true,
+            ),
+          );
+        }
+      } catch (e) {
+        debugPrint('Failed to attach LogInterceptor (non-fatal): $e');
+      }
+
+      // Try Dio POST (preferred: sends cookies if ApiService configured with CookieManager)
+      bool postedSuccessfully = false;
+      try {
+        final resp = await ApiService().dio.post(normalizedPath, data: bodyMap);
+        debugPrint('Saved token to server: ${resp.statusCode} ${resp.data}');
+        postedSuccessfully =
+            resp.statusCode != null &&
+            resp.statusCode! >= 200 &&
+            resp.statusCode! < 300;
+      } on DioException catch (dioErr) {
+        debugPrint('DioError saving token: ${dioErr.message}');
+        debugPrint(
+          'DioError.response?.statusCode: ${dioErr.response?.statusCode}',
+        );
+        debugPrint('DioError.response?.data: ${dioErr.response?.data}');
+      } catch (e) {
+        debugPrint('Unexpected error saving token: $e');
+      }
+
+      // Fallback: try plain http.post if Dio didn't succeed (good for debugging reachability / path)
+      if (!postedSuccessfully) {
+        try {
+          final fullUrl = baseUrl.endsWith('/')
+              ? '$baseUrl${normalizedPath.substring(1)}'
+              : '$baseUrl$normalizedPath';
+          developer.log(
+            'Fallback HTTP POST to $fullUrl',
+            name: 'NotificationService',
+          );
+
+          final response = await http.post(
+            Uri.parse(fullUrl),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(bodyMap),
+          );
+
+          developer.log(
+            'Fallback HTTP response: ${response.statusCode} ${response.body}',
+            name: 'NotificationService',
+          );
+
+          if (response.statusCode >= 200 && response.statusCode < 300) {
+            postedSuccessfully = true;
+          }
+        } catch (httpErr) {
+          developer.log(
+            'Fallback http.post failed: $httpErr',
+            name: 'NotificationService',
+            level: 1000,
+          );
+        }
+      }
+
+      // Subscribe to a topic (optional) only if we successfully posted token
+      if (postedSuccessfully) {
+        try {
+          await FirebaseMessaging.instance.subscribeToTopic('all_users');
+          debugPrint('Subscribed to topic: all_users');
+        } catch (e) {
+          debugPrint('Failed to subscribe to topic all_users: $e');
+        }
       } else {
-        print(
-          'Failed to save token. status=${response.statusCode} body=${response.body}',
+        debugPrint(
+          'Token was not posted successfully -> skipping topic subscribe',
         );
       }
 
-      // Subscribe this device to the global topic "all_users"
-      try {
-        await FirebaseMessaging.instance.subscribeToTopic('all_users');
-        print('Subscribed to topic: all_users');
-      } catch (e) {
-        print('Failed to subscribe to topic all_users: $e');
-      }
-
-      // Listen for future token refreshes and send them to server
+      // Listen for token refresh and upsert on server
       FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
-        print('New FCM token: $newToken');
+        debugPrint('New FCM token: $newToken');
 
-        // Send refreshed token to backend (re-use same endpoint, server will upsert)
+        final refreshBody = {
+          'token': newToken,
+          'userId': userId,
+          'platform': platform ?? Platform.operatingSystem,
+          'meta': {
+            'refreshed': true,
+            'timestamp': DateTime.now().toIso8601String(),
+          },
+        };
+
+        // Attempt to POST refreshed token; prefer Dio
         try {
-          final r = await http.post(
-            uri,
-            headers: {'Content-Type': 'application/json', 'x-api-key': API_KEY},
-            body: jsonEncode({
-              'token': newToken,
-              'userId': userId,
-              'platform': platform ?? Platform.operatingSystem,
-              'meta': {
-                'refreshed': true,
-                'timestamp': DateTime.now().toIso8601String(),
-              },
-            }),
+          final r = await ApiService().dio.post(
+            normalizedPath,
+            data: refreshBody,
           );
-          if (r.statusCode == 200 || r.statusCode == 201) {
-            print('Refreshed token saved to server.');
-          } else {
-            print('Failed to save refreshed token: ${r.statusCode} ${r.body}');
+          debugPrint(
+            'Refreshed token saved to server: ${r.statusCode} ${r.data}',
+          );
+
+          // subscribe if success
+          if (r.statusCode != null &&
+              r.statusCode! >= 200 &&
+              r.statusCode! < 300) {
+            try {
+              await FirebaseMessaging.instance.subscribeToTopic('all_users');
+              debugPrint('Re-subscribed to topic: all_users');
+            } catch (e) {
+              debugPrint('Failed to re-subscribe to topic all_users: $e');
+            }
+          }
+        } on DioException catch (dioErr) {
+          debugPrint('DioException on refresh POST: ${dioErr.message}');
+          debugPrint('DioException.response?.data: ${dioErr.response?.data}');
+          // fallback attempt with http
+          try {
+            final fullUrl = baseUrl.endsWith('/')
+                ? '$baseUrl${normalizedPath.substring(1)}'
+                : '$baseUrl$normalizedPath';
+            final resp = await http.post(
+              Uri.parse(fullUrl),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode(refreshBody),
+            );
+            debugPrint(
+              'Fallback refresh HTTP response: ${resp.statusCode} ${resp.body}',
+            );
+            if (resp.statusCode >= 200 && resp.statusCode < 300) {
+              try {
+                await FirebaseMessaging.instance.subscribeToTopic('all_users');
+                debugPrint('Re-subscribed to topic after fallback: all_users');
+              } catch (e) {
+                debugPrint('Failed to subscribe to topic after fallback: $e');
+              }
+            }
+          } catch (e) {
+            debugPrint('Fallback refresh http failed: $e');
           }
         } catch (e) {
-          print('Error sending refreshed token: $e');
-        }
-
-        // Re-subscribe on token refresh just in case
-        try {
-          await FirebaseMessaging.instance.subscribeToTopic('all_users');
-          print('Re-subscribed to topic: all_users');
-        } catch (e) {
-          print('Failed to re-subscribe to topic all_users: $e');
+          debugPrint('Unexpected error posting refreshed token: $e');
         }
       });
-    } catch (e) {
-      print('Failed to get/save FCM token: $e');
+    } catch (e, st) {
+      developer.log(
+        'Failed to get/save FCM token: $e\n$st',
+        name: 'NotificationService',
+        level: 1000,
+      );
     }
   }
 
-  /// Delete token from server (call on logout if you want to unlink device)
+  /// Unregister token from backend using ApiService().dio
   static Future<void> deleteFcmTokenFromServer({String? token}) async {
     try {
       final t = token ?? await FirebaseMessaging.instance.getToken();
       if (t == null) return;
 
-      final uri = Uri.parse('$BACKEND_BASE_URL/api/fcm-token/$t');
-      final response = await http.delete(
-        uri,
-        headers: {'Content-Type': 'application/json', 'x-api-key': API_KEY},
-      );
+      final baseUrl = ApiService().dio.options.baseUrl;
+      final normalizedPath = (baseUrl.contains('/api'))
+          ? '/fcm/unregister'
+          : '/api/fcm/unregister';
 
-      if (response.statusCode == 200) {
-        print('Deleted token from server');
-      } else {
-        print(
-          'Failed to delete token. status=${response.statusCode} body=${response.body}',
+      try {
+        final resp = await ApiService().dio.post(
+          normalizedPath,
+          data: {'token': t},
         );
+        debugPrint(
+          'Deleted token from server: ${resp.statusCode} ${resp.data}',
+        );
+      } catch (e) {
+        debugPrint('Failed to delete token from server (via Dio): $e');
+        // fallback http
+        try {
+          final fullUrl = baseUrl.endsWith('/')
+              ? '$baseUrl${normalizedPath.substring(1)}'
+              : '$baseUrl$normalizedPath';
+          final r = await http.post(
+            Uri.parse(fullUrl),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'token': t}),
+          );
+          debugPrint(
+            'Fallback delete http response: ${r.statusCode} ${r.body}',
+          );
+        } catch (httpErr) {
+          debugPrint('Fallback http delete failed: $httpErr');
+        }
       }
 
       // Optionally unsubscribe from topic(s)
       try {
         await FirebaseMessaging.instance.unsubscribeFromTopic('all_users');
-        print('Unsubscribed from topic: all_users');
+        debugPrint('Unsubscribed from topic: all_users');
       } catch (e) {
-        print('Failed to unsubscribe from topic all_users: $e');
+        debugPrint('Failed to unsubscribe from topic all_users: $e');
       }
     } catch (e) {
-      print('Error deleting token from server: $e');
+      debugPrint('Error deleting token from server: $e');
     }
   }
 
