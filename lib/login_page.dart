@@ -1,10 +1,12 @@
 // lib/login_page.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'api_service.dart';
 import 'cache_service.dart';
 import 'notification_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sacred_heart_hostel/models/student_profile.dart';
 import 'role_shell.dart';
 
 class LoginPage extends StatefulWidget {
@@ -36,6 +38,83 @@ class _LoginPageState extends State<LoginPage> {
     return 'student';
   }
 
+  /// Long-running background tasks to run *after* navigation.
+  /// These are executed non-blocking so user sees the dashboard immediately.
+  Future<void> _postLoginTasks({required String role, String? username}) async {
+    try {
+      // Best-effort: request notification permission (do not block navigation)
+      try {
+        final settings = await NotificationService.requestPermission();
+        final allowed =
+            settings.authorizationStatus == AuthorizationStatus.authorized ||
+            settings.authorizationStatus == AuthorizationStatus.provisional;
+        debugPrint('Notification permission allowed: $allowed');
+      } catch (permErr) {
+        debugPrint('Notification permission request failed: $permErr');
+      }
+
+      // Persist canonical auth cache (role + username)
+      try {
+        await CacheService.saveAuthCache(role: role, username: username);
+        final sp = await SharedPreferences.getInstance();
+        await sp.setString('role', role);
+        if (username != null && username.isNotEmpty) {
+          await sp.setString('username', username);
+        }
+      } catch (e) {
+        debugPrint('Warning: failed to persist canonical auth info: $e');
+      }
+
+      // Debug: list cookies (helpful when server uses cookie-based session)
+      try {
+        final cookies = await ApiService().cookieJar.loadForRequest(
+          Uri.parse(ApiService.baseUrl),
+        );
+        debugPrint(
+          'Cookies after login (background): ${cookies.map((c) => '${c.name}=${c.value}').toList()}',
+        );
+      } catch (cookieErr) {
+        debugPrint(
+          'Failed to list cookies after login (background): $cookieErr',
+        );
+      }
+
+      // If AD: preload AD-specific caches (best-effort)
+      if (role == 'ad') {
+        try {
+          final respStudents = await ApiService().dio.get('/api/attendance');
+          final studentsData = respStudents.data;
+          if (studentsData != null && studentsData['students'] != null) {
+            await CacheService.saveAttendanceCache(
+              Map<String, dynamic>.from(studentsData['students']),
+            );
+          }
+        } catch (e) {
+          debugPrint('Preload grouped students cache failed (background): $e');
+        }
+
+        try {
+          final respRecords = await ApiService().dio.get(
+            '/api/attendance/get-attendance-records',
+          );
+          final recordsData = respRecords.data;
+          if (recordsData != null &&
+              recordsData['attendance-records'] != null) {
+            await CacheService.saveAttendanceRecordsCache(
+              recordsData['attendance-records'],
+            );
+          } else {
+            await CacheService.saveAttendanceRecordsCache(recordsData);
+          }
+        } catch (e) {
+          debugPrint('Preload attendance records failed (background): $e');
+        }
+      }
+    } catch (outer) {
+      debugPrint('Unexpected error in post-login background tasks: $outer');
+    }
+  }
+
   Future<void> _handleLogin() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -45,30 +124,20 @@ class _LoginPageState extends State<LoginPage> {
     });
 
     try {
-      // Request notification permission (best-effort)
-      final settings = await NotificationService.requestPermission();
-      final allowed =
-          settings.authorizationStatus == AuthorizationStatus.authorized ||
-          settings.authorizationStatus == AuthorizationStatus.provisional;
-
-      // Perform login POST
+      // Perform login POST (this is the critical fast path)
       final loginResp = await ApiService().login(
         _username.text.trim(),
         _password.text,
       );
 
-      // After login: ask server for authoritative auth state (uses cookies / token)
+      // Fast-path: skip forceVerify here. We'll verify in background to avoid blocking UI.
       Map<String, dynamic> authInfo = {};
-      try {
-        authInfo = await ApiService().authenticate(forceVerify: true);
-        debugPrint('authenticate(forceVerify:true) => $authInfo');
-      } catch (aErr) {
-        debugPrint('authenticate() after login failed: $aErr');
-      }
 
       // Derive canonical role & username (prefer authInfo, fallback to login response)
-      String canonicalRole = '';
-      String? canonicalUsername;
+      String canonicalRole =
+          (loginResp['user']?['role'] ?? loginResp['role'] ?? '').toString();
+      String? canonicalUsername =
+          (loginResp['user']?['username'] ?? loginResp['username'])?.toString();
 
       if (authInfo.isNotEmpty) {
         canonicalRole = (authInfo['role'] ?? '').toString();
@@ -91,78 +160,70 @@ class _LoginPageState extends State<LoginPage> {
           : 'student';
       final username = canonicalUsername;
 
-      // Persist canonical auth cache (role + username)
-      try {
-        await CacheService.saveAuthCache(
-          role: role,
-          username: username?.toString(),
-        );
-        final sp = await SharedPreferences.getInstance();
-        await sp.setString('role', role);
-        if (username != null && username.isNotEmpty) {
-          await sp.setString('username', username);
-        }
-      } catch (e) {
-        debugPrint('Warning: failed to persist canonical auth info: $e');
-      }
-
-      // Debug: list cookies (helpful when server uses cookie-based session)
-      try {
-        final cookies = await ApiService().cookieJar.loadForRequest(
-          Uri.parse(ApiService.baseUrl),
-        );
-        debugPrint(
-          'Cookies after login: ${cookies.map((c) => '${c.name}=${c.value}').toList()}',
-        );
-      } catch (cookieErr) {
-        debugPrint('Failed to list cookies after login: $cookieErr');
-      }
-
-      // If AD: preload AD-specific caches (best-effort)
-      if (role == 'ad') {
-        try {
-          final respStudents = await ApiService().dio.get('/api/attendance');
-          final studentsData = respStudents.data;
-          if (studentsData != null && studentsData['students'] != null) {
-            await CacheService.saveAttendanceCache(
-              Map<String, dynamic>.from(studentsData['students']),
-            );
-          }
-        } catch (e) {
-          debugPrint('Preload grouped students cache failed: $e');
-        }
-
-        try {
-          final respRecords = await ApiService().dio.get(
-            '/api/attendance/get-attendance-records',
-          );
-          final recordsData = respRecords.data;
-          if (recordsData != null &&
-              recordsData['attendance-records'] != null) {
-            await CacheService.saveAttendanceRecordsCache(
-              recordsData['attendance-records'],
-            );
-          } else {
-            await CacheService.saveAttendanceRecordsCache(recordsData);
-          }
-        } catch (e) {
-          debugPrint('Preload attendance records failed: $e');
-        }
-      }
-
-      // Navigate into RoleShell for all recognized roles
+      // NAVIGATE IMMEDIATELY on successful login
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => RoleShell(role: role)),
       );
+
+      // Start background post-login tasks without awaiting navigation or blocking UI.
+      // Use Future.microtask to ensure this runs asynchronously.
+      // Start background post-login tasks without awaiting navigation or blocking UI.
+      // Use Future.microtask to ensure this runs asynchronously.
+      Future.microtask(() async {
+        try {
+          // Try authoritative authenticate (best-effort; won't block UI)
+          Map<String, dynamic> authInfo = {};
+          try {
+            authInfo = await ApiService().authenticate(forceVerify: true);
+            debugPrint('authenticate(forceVerify:true) => $authInfo');
+          } catch (aErr) {
+            debugPrint('authenticate() after login failed (background): $aErr');
+          }
+
+          // If authenticate returned better canonical info, update caches / shared prefs
+          String authoritativeRole =
+              (authInfo['role'] ?? authInfo['user']?['role'] ?? '').toString();
+          String? authoritativeUsername =
+              (authInfo['username'] ?? authInfo['user']?['username'])
+                  ?.toString();
+
+          final finalRole = authoritativeRole.isNotEmpty
+              ? _normalizeRole(authoritativeRole)
+              : role;
+          final finalUsername =
+              (authoritativeUsername != null &&
+                  authoritativeUsername.isNotEmpty)
+              ? authoritativeUsername
+              : username;
+
+          // Persist caches + run other heavy preloads
+          await _postLoginTasks(role: finalRole, username: finalUsername);
+
+          // --- NEW: If student, fetch profile via getMe (background) and cache it ---
+          if (finalRole == 'student') {
+            try {
+              // Expectation: ApiService.getMe() returns Map<String, dynamic> (student profile)
+              final meResp = await ApiService().getMe();
+              if (meResp != null) {
+                final profile = StudentProfile.fromMap(meResp);
+                await CacheService.saveProfileCache(profile.toMap());
+              }
+            } catch (getMeErr) {
+              debugPrint('Background getMe() failed: $getMeErr');
+            }
+          }
+        } catch (err) {
+          debugPrint('Background post-login work failed: $err');
+        }
+      });
+
       return;
     } on Exception catch (e) {
-      // Dio exceptions are wrapped as Exception in ApiService; show friendly message
       setState(() {
         _error = e.toString().replaceAll('Exception: ', '');
       });
     } catch (e) {
-      // Unexpected errors
       setState(() {
         _error = e.toString();
       });
