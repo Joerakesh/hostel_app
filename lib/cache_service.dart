@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sacred_heart_hostel/models/student_profile.dart';
 
 class CacheService {
   // Creating Const for Cache - Attendance, Role, Username
@@ -10,7 +11,8 @@ class CacheService {
   static const _authRoleKey = 'auth_role';
   static const _authUsernameKey = 'auth_username';
   static const _authCachedAtKey = 'auth_cached_at';
-
+  static const _profileKey = 'profile_cache';
+  static const _profileCachedAtKey = 'profile_cache_at';
   // Saves Auth to cache - Role, Token, Username
   static Future<void> saveAuthCache({
     required String role,
@@ -127,6 +129,63 @@ class CacheService {
     if (cachedAt == null) return false;
     final diff = DateTime.now().difference(cachedAt);
     return diff.inHours <= withinHours;
+  }
+
+  /// Save profile JSON (expects a Map<String, dynamic> or StudentProfile.toMap())
+  static Future<void> saveProfileCache(Map<String, dynamic> profile) async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonStr = jsonEncode(profile);
+    await prefs.setString(_profileKey, jsonStr);
+    await prefs.setString(
+      _profileCachedAtKey,
+      DateTime.now().toIso8601String(),
+    );
+  }
+
+  /// Load profile cache. Returns Map<String, dynamic>?; null if absent or corrupted.
+  static Future<Map<String, dynamic>?> loadProfileCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonStr = prefs.getString(_profileKey);
+    if (jsonStr == null) return null;
+    try {
+      final Map<String, dynamic> map =
+          jsonDecode(jsonStr) as Map<String, dynamic>;
+      return map;
+    } catch (_) {
+      // Corrupt data -> clear and return null
+      await clearProfileCache();
+      return null;
+    }
+  }
+
+  /// Convenience: load as StudentProfile (returns null if missing/corrupt)
+  static Future<StudentProfile?> loadProfileAsModel() async {
+    final map = await loadProfileCache();
+    if (map == null) return null;
+    try {
+      return StudentProfile.fromMap(map);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Clear profile cache
+  static Future<void> clearProfileCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_profileKey);
+    await prefs.remove(_profileCachedAtKey);
+  }
+
+  /// Optional helper: profile cached at
+  static Future<DateTime?> getProfileCachedAt() async {
+    final prefs = await SharedPreferences.getInstance();
+    final iso = prefs.getString(_profileCachedAtKey);
+    if (iso == null) return null;
+    try {
+      return DateTime.parse(iso);
+    } catch (_) {
+      return null;
+    }
   }
 
   // Clear Attendance Records Cache
