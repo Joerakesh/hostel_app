@@ -6,6 +6,8 @@ import 'notification_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart'
     show AuthorizationStatus, FirebaseMessaging, NotificationSettings;
 
+import 'models/student_profile.dart'; // make sure this path matches your project
+
 class ProfilePage extends StatefulWidget {
   final String role;
   const ProfilePage({super.key, required this.role});
@@ -15,7 +17,8 @@ class ProfilePage extends StatefulWidget {
 }
 
 class _ProfilePageState extends State<ProfilePage> {
-  String? _username;
+  StudentProfile? _student;
+  Map<String, dynamic>? _rawProfile; // fallback if model isn't available
   bool _busy = false;
   bool _notificationsEnabled = false;
 
@@ -24,20 +27,95 @@ class _ProfilePageState extends State<ProfilePage> {
     super.initState();
     _loadCachedProfile();
     _checkNotificationStatus();
+
+    // Optional: attempt server refresh (uncomment to enable)
+    // _refreshProfileFromServer();
   }
 
+  /// Load profile from CacheService. Prefer the typed model, but keep raw map
+  /// as fallback (some older caches may store different shapes).
   Future<void> _loadCachedProfile() async {
     try {
-      final cached = await CacheService.loadAuthCache();
+      // Try the typed loader first (returns StudentProfile?).
+      final StudentProfile? model = await CacheService.loadProfileAsModel();
+      if (model != null) {
+        if (!mounted) return;
+        setState(() {
+          _student = model;
+          _rawProfile = model.toMap();
+        });
+        return;
+      }
+
+      // Fallback: raw map
+      final Map<String, dynamic>? map = await CacheService.loadProfileCache();
+      if (!mounted) return;
+      if (map != null) {
+        setState(() {
+          _rawProfile = map;
+          try {
+            _student = StudentProfile.fromMap(map);
+          } catch (_) {
+            _student = null;
+          }
+        });
+      } else {
+        setState(() {
+          _student = null;
+          _rawProfile = null;
+        });
+      }
+    } catch (e) {
+      debugPrint('Failed to load cached profile: $e');
+      if (!mounted) return;
       setState(() {
-        _username = cached['username'] ?? 'Unknown';
-      });
-    } catch (_) {
-      setState(() {
-        _username = 'Unknown';
+        _student = null;
+        _rawProfile = null;
       });
     }
   }
+
+  /// Optional: refresh profile from server and update cache.
+  ///
+  /// NOTE: Adjust ApiService.fetchProfile() to your real API method name/signature.
+  /// This function handles either a Map<String, dynamic> or StudentProfile return.
+  // Future<void> _refreshProfileFromServer() async {
+  //   try {
+  //     setState(() => _busy = true);
+
+  //     final dynamic res = await ApiService.fetchProfile(); // <-- adapt this
+
+  //     if (res == null) return;
+
+  //     if (res is StudentProfile) {
+  //       _student = res;
+  //       _rawProfile = res.toMap();
+  //       await CacheService.saveProfileCache(_rawProfile!);
+  //     } else if (res is Map<String, dynamic>) {
+  //       _rawProfile = res;
+  //       try {
+  //         _student = StudentProfile.fromMap(res);
+  //       } catch (_) {
+  //         _student = null;
+  //       }
+  //       await CacheService.saveProfileCache(res);
+  //     } else {
+  //       // unexpected shape; try toJson() if model-like
+  //       try {
+  //         final map = (res as dynamic).toJson() as Map<String, dynamic>;
+  //         _rawProfile = map;
+  //         _student = StudentProfile.fromMap(map);
+  //         await CacheService.saveProfileCache(map);
+  //       } catch (e) {
+  //         debugPrint('Unrecognized profile response shape: $e');
+  //       }
+  //     }
+  //   } catch (e) {
+  //     debugPrint('Failed to refresh profile from server: $e');
+  //   } finally {
+  //     if (mounted) setState(() => _busy = false);
+  //   }
+  // }
 
   Future<void> _checkNotificationStatus() async {
     try {
@@ -195,7 +273,8 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Color _getRoleColor() {
-    switch (widget.role.toLowerCase()) {
+    final roleString = (widget.role).toLowerCase();
+    switch (roleString) {
       case 'ad':
         return Colors.purple;
       case 'director':
@@ -206,7 +285,8 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   String _getRoleDisplayName() {
-    switch (widget.role.toLowerCase()) {
+    final roleString = (widget.role).toLowerCase();
+    switch (roleString) {
       case 'ad':
         return 'Administrator';
       case 'director':
@@ -216,94 +296,52 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
+  // Unified getter: prefer typed model, fallback to raw map, finally default.
+  String? _get(String key) {
+    if (_student != null) {
+      switch (key) {
+        case 'name':
+          return _student!.name;
+        case 'dNo':
+          return _student!.dNo;
+        case 'accNo':
+          return _student!.accNo?.toString();
+        case 'studentNo':
+          return _student!.studentNo;
+        case 'parentNo':
+          return _student!.parentNo;
+        case 'block':
+          return _student!.block;
+        case 'roomNo':
+          return _student!.roomNo;
+        case 'religion':
+          return _student!.religion;
+        case 'role':
+          return _student!.role;
+        case 'id':
+        case '_id':
+          return _student!.id;
+        default:
+          return null;
+      }
+    }
+    if (_rawProfile != null && _rawProfile!.containsKey(key)) {
+      final v = _rawProfile![key];
+      return v == null ? null : v.toString();
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
-    // safe initial letter computation
-    final initial = (_username?.isNotEmpty ?? false)
-        ? _username![0].toUpperCase()
-        : 'U';
+    final name = _get('name');
+    final initial = (name?.isNotEmpty ?? false) ? name![0].toUpperCase() : 'U';
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       body: SafeArea(
         child: CustomScrollView(
           slivers: [
-            // Header
-            SliverAppBar(
-              expandedHeight: 180,
-              pinned: false,
-              automaticallyImplyLeading: false,
-              flexibleSpace: FlexibleSpaceBar(
-                background: Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        _getRoleColor(),
-                        _getRoleColor().withOpacity(0.8),
-                      ],
-                    ),
-                  ),
-                  // Align bottom to avoid Column trying to fill the constrained height.
-                  child: Align(
-                    alignment: Alignment.bottomLeft,
-                    child: Padding(
-                      padding: const EdgeInsets.all(20),
-                      // make the inner Column take minimal space so it won't overflow
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          CircleAvatar(
-                            radius: 30,
-                            backgroundColor: Colors.white.withOpacity(0.2),
-                            child: Text(
-                              initial,
-                              style: const TextStyle(
-                                fontSize: 24,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          Text(
-                            _username ?? 'Unknown User',
-                            style: const TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.white,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 4,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.2),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              _getRoleDisplayName(),
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Colors.white,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
-            // Content
             SliverList(
               delegate: SliverChildListDelegate([
                 const SizedBox(height: 20),
@@ -324,18 +362,120 @@ class _ProfilePageState extends State<ProfilePage> {
                         ),
                       ),
                       const SizedBox(height: 16),
+
+                      // Name row (big)
+                      Container(
+                        margin: const EdgeInsets.symmetric(vertical: 8),
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.grey.shade100),
+                        ),
+                        child: Row(
+                          children: [
+                            CircleAvatar(
+                              radius: 28,
+                              backgroundColor: _getRoleColor().withOpacity(0.1),
+                              child: Text(
+                                initial,
+                                style: TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                  color: _getRoleColor(),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    name ?? 'Unknown User',
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w700,
+                                      color: Colors.black87,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: _getRoleColor().withOpacity(0.12),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Text(
+                                      _get('role') ?? _getRoleDisplayName(),
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: _getRoleColor(),
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      // Other profile rows:
                       _buildInfoRow(
-                        Icons.person_rounded,
-                        'Username',
-                        _username,
-                        Colors.blue,
+                        Icons.credit_card_rounded,
+                        'D No',
+                        _get('dNo'),
+                        Colors.teal,
+                      ),
+                      _buildInfoRow(
+                        Icons.account_balance_wallet_rounded,
+                        'Account No',
+                        _get('accNo'),
+                        Colors.indigo,
+                      ),
+                      _buildInfoRow(
+                        Icons.people_alt_rounded,
+                        'Student No',
+                        _get('studentNo'),
+                        Colors.green,
+                      ),
+                      _buildInfoRow(
+                        Icons.phone_iphone_rounded,
+                        'Parent No',
+                        _get('parentNo'),
+                        Colors.pink,
+                      ),
+                      _buildInfoRow(
+                        Icons.house_rounded,
+                        'Block',
+                        _get('block'),
+                        Colors.brown,
+                      ),
+                      _buildInfoRow(
+                        Icons.meeting_room_rounded,
+                        'Room No',
+                        _get('roomNo'),
+                        Colors.cyan,
+                      ),
+                      _buildInfoRow(
+                        Icons.book_rounded,
+                        'Religion',
+                        _get('religion'),
+                        Colors.deepOrange,
                       ),
                       _buildInfoRow(
                         Icons.badge_rounded,
                         'Role',
-                        _getRoleDisplayName(),
+                        _get('role') ?? _getRoleDisplayName(),
                         _getRoleColor(),
                       ),
+
+                      const SizedBox(height: 12),
                       _buildNotificationToggle(),
                     ],
                   ),
@@ -378,7 +518,7 @@ class _ProfilePageState extends State<ProfilePage> {
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Text(
-                                    'Signed in as ${_username ?? '—'}',
+                                    'Signed in as ${name ?? '—'}',
                                     style: TextStyle(
                                       color: Colors.grey.shade600,
                                       fontSize: 14,
