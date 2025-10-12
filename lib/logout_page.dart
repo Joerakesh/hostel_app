@@ -27,6 +27,8 @@ class _LogoutPageState extends State<LogoutPage> {
       // 2️⃣ Clear caches
       await CacheService.clearAuthCache();
       await CacheService.clearAttendanceCache();
+      await CacheService.clearAttendanceRecordsCache();
+      await CacheService.clearProfileCache();
 
       // 3️⃣ Delete local FCM token (so user stops getting notifications)
       try {
