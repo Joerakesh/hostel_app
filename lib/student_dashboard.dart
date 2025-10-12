@@ -21,9 +21,9 @@ class _StudentDashboardState extends State<StudentDashboard> {
 
   Future<void> _loadCachedProfile() async {
     try {
-      final cached = await CacheService.loadAuthCache();
+      final cached = await CacheService.loadProfileCache();
       setState(() {
-        _username = cached['username'] ?? 'Student';
+        _username = cached != null ? cached['name'] ?? 'Student' : 'Student';
         _loading = false;
       });
     } catch (_) {
@@ -56,7 +56,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
             SliverToBoxAdapter(child: _buildHeaderSection()),
 
             // Stats Section
-            SliverToBoxAdapter(child: _buildStatsSection()),
+            // SliverToBoxAdapter(child: _buildStatsSection()),
 
             // Quick Actions Section
             SliverToBoxAdapter(child: _buildQuickActionsHeader()),
