@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:flutter/material.dart';
 import 'cache_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 
 class ApiService {
   ApiService._privateConstructor();
@@ -297,6 +298,34 @@ class ApiService {
       } catch (e) {
         debugPrint('Failed to clear cookies on logout: $e');
       }
+    }
+  }
+
+  Future<Map<String, dynamic>?> getMe() async {
+    try {
+      final resp = await dio.get('/api/students/me');
+      if (resp.data is Map<String, dynamic>) {
+        final Map<String, dynamic> map = resp.data as Map<String, dynamic>;
+
+        // Persist the profile to cache
+        try {
+          await CacheService.saveProfileCache(map);
+          debugPrint('Saved profile to cache');
+        } catch (e) {
+          debugPrint('Failed to save profile to cache: $e');
+        }
+
+        return map;
+      }
+      return null;
+    } on DioException catch (e) {
+      debugPrint(
+        'ApiService.getMe() failed: ${e.message} ${e.response?.statusCode}',
+      );
+      return null;
+    } catch (e) {
+      debugPrint('ApiService.getMe() unexpected error: $e');
+      return null;
     }
   }
 }
